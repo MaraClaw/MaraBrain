@@ -31,6 +31,7 @@ case $MARABRAIN_DATA_VOLUME in
     [!A-Za-z0-9]*|*[!A-Za-z0-9_.-]*) printf '%s\n' 'MARABRAIN_DATA_VOLUME must be a Docker volume name' >&2; exit 1 ;;
 esac
 export MARABRAIN_BEARER_SECRET MARABRAIN_ALLOWED_HOSTS MARABRAIN_ALLOWED_ORIGINS
+export EMBEDDING_MODEL EMBEDDING_DIMS EMBEDDING_PROVIDER_URL EMBEDDING_API_KEY
 
 docker build --tag "$MARABRAIN_IMAGE" "$script_dir"
 docker run --rm --init --read-only --tmpfs /tmp --cap-drop ALL \
@@ -44,4 +45,5 @@ exec docker run --name "$MARABRAIN_CONTAINER" --init --read-only --tmpfs /tmp \
     --publish "127.0.0.1:$MARABRAIN_HOST_PORT:9110" \
     --env MARABRAIN_TRANSPORT=http \
     --env MARABRAIN_BEARER_SECRET --env MARABRAIN_ALLOWED_HOSTS --env MARABRAIN_ALLOWED_ORIGINS \
+    --env EMBEDDING_MODEL --env EMBEDDING_DIMS --env EMBEDDING_PROVIDER_URL --env EMBEDDING_API_KEY \
     "$MARABRAIN_IMAGE"

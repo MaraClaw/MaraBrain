@@ -34,6 +34,7 @@ MaraBrain/
 | Server construction and tool registration | `marabrain/server.py:create_server` | Factory accepts typed settings; tests use it directly |
 | Transport startup | `marabrain/server.py:main` | Both console script and module delegate here |
 | Environment parsing | `marabrain/config.py:Settings` | Frozen Pydantic settings with `MARABRAIN_` prefix |
+| Remote embedding startup | `marabrain/embeddings.py` | Validate provider and dimensions, then merge persisted Crystalline configuration |
 | Transport variants | `marabrain/config.py:Transport` | `stdio` and `http`; startup uses exhaustive matching |
 | Application version | `marabrain/__init__.py` | Health model and tests also contain version literals |
 | Runtime deployment | `Dockerfile`, `start-from-docker.sh` | Image security and launcher lifecycle are coupled |
@@ -111,6 +112,11 @@ uv build
   (default `marabrain-data`). Preserve this volume when replacing containers.
 - Local health checks require a running Crystalline daemon on the same user/XDG
   paths. A responsive engine does not imply its embedding model is ready.
+- Docker forwards `EMBEDDING_MODEL`, `EMBEDDING_PROVIDER_URL`, `EMBEDDING_DIMS`, and
+  optional `EMBEDDING_API_KEY`. Remote settings are validated before daemon startup;
+  dimensions are checked against a probe response, not sent as a request option.
+  Keep API key values out of persisted YAML. Empty embedding settings preserve
+  existing Crystalline configuration; changing models does not migrate vectors.
 - The smoke client chooses `MARABRAIN_HOST_PORT`, then `MARABRAIN_PORT`, then 9110.
 
 ## ANTI-PATTERNS

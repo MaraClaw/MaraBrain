@@ -114,6 +114,38 @@ Health checks engine and store responsiveness, not embedding-model readiness or
 semantic-search quality. See the upstream [deployment guide](https://github.com/jordiboehme/crystalline/blob/v0.31.0/docs/deployment.md)
 for offline model provisioning.
 
+### Remote embeddings
+
+Set `EMBEDDING_MODEL`, `EMBEDDING_PROVIDER_URL`, and `EMBEDDING_DIMS` together in
+`.env` to use an OpenAI-compatible embedding provider. Set `EMBEDDING_API_KEY`
+when the endpoint requires bearer authentication; otherwise leave it empty.
+
+| Environment variable | Meaning |
+| --- | --- |
+| `EMBEDDING_MODEL` | Model name accepted by the provider |
+| `EMBEDDING_PROVIDER_URL` | HTTP or HTTPS API base, including any version prefix, without `/embeddings` |
+| `EMBEDDING_DIMS` | Expected positive vector length, checked against the provider response |
+| `EMBEDDING_API_KEY` | Optional bearer token, passed only at runtime |
+
+Before starting Crystalline, the container sends a small embedding request and
+checks its response and vector length. Invalid settings, authentication failures,
+unreachable providers, and mismatched dimensions stop startup. Crystalline does
+not support a `dimensions` request field, so choose a provider or model that
+already returns the expected vector length.
+
+After the check succeeds, startup merges the provider settings into
+`/data/config/crystalline/config.yaml`, preserving unrelated settings and domains.
+The file stores the API key's environment variable name, never its value. The
+remote provider avoids the default Granite embedding-model download. Restart the
+container after changing these variables; the startup check does not continuously
+monitor the provider, and MCP health continues to check the Crystalline daemon.
+
+Leaving all four variables unset or empty preserves the existing Crystalline
+configuration and skips the remote-provider check. A fresh volume then uses the
+default local model. Changing providers or models does not automatically migrate
+existing vectors; follow Crystalline's indexing guidance before reusing an index
+with a different embedding space.
+
 Override `MARABRAIN_IMAGE`, `MARABRAIN_CONTAINER`, `MARABRAIN_HOST_PORT`, or
 `MARABRAIN_DATA_VOLUME` to choose an image tag, container name, local port, or
 persistent volume. The host and origin allowlists

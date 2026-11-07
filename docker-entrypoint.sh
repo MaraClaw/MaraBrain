@@ -7,6 +7,7 @@ if [ "$#" -ne 1 ] || [ "$1" != marabrain ]; then
 fi
 
 crystalline config set service.http false
+python -m marabrain.embeddings
 crystalline serve &
 daemon=$!
 "$@" &
