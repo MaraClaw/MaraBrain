@@ -19,6 +19,7 @@ MaraBrain/
 |-- tests/test_server.py   # Automated configuration and MCP transport tests
 |-- test_health.py         # Client smoke check against an existing HTTP server
 |-- start-from-docker.sh   # Build, validate, and run a foreground container
+|-- docker-entrypoint.sh   # Supervise Crystalline and the MCP server
 |-- Dockerfile            # Locked production installation; HTTP-only runtime
 |-- .env.example          # Local and Docker settings; blank bearer credential
 |-- pyproject.toml        # Packaging, dependencies, tests, lint, and type checks
@@ -105,6 +106,9 @@ uv build
   the stopped named container remains and must be removed before reusing its name.
 - Runtime uses UID/GID 65532, a read-only filesystem, temporary `/tmp`, dropped
   capabilities, and no-new-privileges. Secrets are passed at runtime.
+- Crystalline runs with its HTTP listener disabled. Its writable configuration,
+  state, and cache live under `/data` in the `MARABRAIN_DATA_VOLUME` named volume
+  (default `marabrain-data`). Preserve this volume when replacing containers.
 - Local health checks require a running Crystalline daemon on the same user/XDG
   paths. A responsive engine does not imply its embedding model is ready.
 - The smoke client chooses `MARABRAIN_HOST_PORT`, then `MARABRAIN_PORT`, then 9110.
