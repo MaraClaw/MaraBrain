@@ -1,9 +1,12 @@
 """MaraBrain MCP server construction and transport startup."""
 
 import secrets
+import subprocess
 from typing import Literal, assert_never
 
+import anyio
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken, TokenVerifier
 from pydantic import BaseModel, ConfigDict, SecretStr
 
@@ -12,7 +15,7 @@ from marabrain.config import Settings, Transport
 
 
 class HealthResponse(BaseModel):
-    """Immutable server liveness response with the application version."""
+    """Immutable readiness response returned once the Crystalline daemon answers."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -41,8 +44,13 @@ def create_server(settings: Settings) -> FastMCP:
     server = FastMCP("marabrain-mcp", version=__version__, auth=auth, mask_error_details=True, strict_input_validation=True, tasks=False)
 
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True})
-    def health() -> HealthResponse:
-        """Report server liveness and the running application version."""
+    async def health() -> HealthResponse:
+        """Report the application version once the Crystalline daemon answers its status probe, or fail within 2 seconds."""
+        try:
+            with anyio.fail_after(2):
+                await anyio.run_process(["crystalline", "ctl", "status"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.CalledProcessError, TimeoutError) as error:
+            raise ToolError("Crystalline daemon is not responding.") from error
         return HealthResponse()
 
     return server

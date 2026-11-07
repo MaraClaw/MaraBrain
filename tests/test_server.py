@@ -1,15 +1,50 @@
 """Behavior tests for server configuration and MCP transport boundaries."""
 
+import os
+import stat
 import sys
+from pathlib import Path
 
+import anyio
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
+from fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from starlette.testclient import TestClient
 
 from marabrain.config import Settings, Transport
 from marabrain.server import create_server
+
+PROBE_NOISE = "probe-noise"
+ENGINE_SCRIPT = f"""#!/bin/sh
+printf '%s\\n' "$*" >> "${{0%/*}}/calls"
+read -r mode < "${{0%/*}}/mode"
+case "$mode" in
+ok) echo {PROBE_NOISE}; echo {PROBE_NOISE} >&2; exit 0 ;;
+fail) echo {PROBE_NOISE}; echo {PROBE_NOISE} >&2; exit 3 ;;
+hang) exec /bin/sleep 30 ;;
+esac
+"""
+
+
+@pytest.fixture
+def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Put a fake crystalline executable first on PATH and return its directory, which records calls and takes its mode from a file."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "crystalline"
+    executable.write_text(ENGINE_SCRIPT)
+    executable.chmod(0o755)
+    (bin_dir / "mode").write_text("ok")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(bin_dir), os.environ["PATH"]]))
+    return bin_dir
+
+
+def probe_calls(engine: Path) -> list[str]:
+    """Return the argument lines recorded by the fake crystalline executable."""
+    calls = engine / "calls"
+    return calls.read_text().splitlines() if calls.exists() else []
 
 
 @pytest.mark.parametrize("transport", list(Transport))
@@ -44,8 +79,8 @@ def test_http_secret_is_required_and_redacted(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
-async def test_mcp_inventory_and_health() -> None:
-    """Verify the MCP server identity, interface inventory, and health response."""
+async def test_mcp_inventory_and_health(engine: Path, capfd: pytest.CaptureFixture[str]) -> None:
+    """Verify the MCP server identity, interface inventory, and health response backed by one status probe."""
     async with Client(create_server(Settings())) as client:
         assert client.server_info is not None
         assert client.server_info.name == "marabrain-mcp"
@@ -58,18 +93,39 @@ async def test_mcp_inventory_and_health() -> None:
         assert await client.list_prompts() == []
         result = await client.call_tool("health", {})
         assert result.structured_content == {"status": "ok", "version": "0.1.0"}
+    assert probe_calls(engine) == ["ctl status"]
+    assert PROBE_NOISE not in "".join(capfd.readouterr())
+
+
+@pytest.mark.parametrize("mode", ["missing", "unexecutable", "fail", "hang"])
+@pytest.mark.asyncio
+async def test_health_fails_without_a_responsive_engine(engine: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str], mode: str) -> None:
+    """Verify that a missing, unexecutable, failing, or hung engine yields a bounded generic tool error."""
+    if mode == "missing":
+        (engine / "crystalline").unlink()
+        monkeypatch.setenv("PATH", str(engine))
+    elif mode == "unexecutable":
+        (engine / "crystalline").chmod(stat.S_IRUSR | stat.S_IWUSR)
+    else:
+        (engine / "mode").write_text(mode)
+    async with Client(create_server(Settings())) as client:
+        with anyio.fail_after(10), pytest.raises(ToolError) as error:
+            await client.call_tool("health", {})
+    assert PROBE_NOISE not in str(error.value) + "".join(capfd.readouterr())
+    assert probe_calls(engine) == (["ctl status"] if mode in {"fail", "hang"} else [])
 
 
 @pytest.mark.asyncio
-async def test_module_stdio_entrypoint() -> None:
+async def test_module_stdio_entrypoint(engine: Path) -> None:
     """Verify that the module entry point serves health requests over stdio."""
     transport = StdioTransport(command=sys.executable, args=["-m", "marabrain"])
     async with Client(transport, timeout=10) as client:
         result = await client.call_tool("health", {})
         assert result.structured_content == {"status": "ok", "version": "0.1.0"}
+    assert probe_calls(engine) == ["ctl status"]
 
 
-def test_http_auth_and_host_origin_protection(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_http_auth_and_host_origin_protection(engine: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify HTTP authentication, host and origin restrictions, and authorized health requests."""
     monkeypatch.setenv("MARABRAIN_TRANSPORT", "http")
     monkeypatch.setenv("MARABRAIN_BEARER_SECRET", "s" * 32)
