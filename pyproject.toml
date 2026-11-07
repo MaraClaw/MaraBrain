@@ -1,0 +1,261 @@
+[project]
+name = "marabrain"
+version = "0.1.0"
+description = "MaraBrain is a MCP server for AI agent knowledge base. Plain markdown underneath."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "MaraClaw Engineers" }
+]
+requires-python = ">=3.14.4"
+keywords = ["mcp", "github", "google okf"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+dependencies = [
+    "fastmcp>=4.1.6",
+    "pydantic>=2.14.3",
+    "pydantic-settings>=2.0",
+    "fastapi[standard]>=0.162.1",
+    "uvicorn[standard]>=0.54.0",
+    "pygithub>=2.10.0",
+    "asyncer>=0.0.18",
+    "anyio>=4.16.0",
+    "python-dotenv>=1.2.4",
+    "dynaconf>=3.3.5",
+    "mcp>=2.3.0",
+    "uvloop>=0.23.0",
+    "httptools>=0.9.0",
+    "starlette>=1.10.0",
+    "httpx[http2]>=0.28.1",
+    "jinja2>=3.1.6",
+    "python-multipart>=0.0.33",
+    "itsdangerous>=2.2.0",
+    "pyyaml>=6.0.3",
+    "h2>=4.4.1",
+    "hpack>=4.2.0",
+    "hyperframe>=6.1.0",
+    "aiohttp>=3.14.5",
+    "aiodns>=4.0.4",
+    "httpx-aiohttp>=0.2.0",
+    "pyjwt>=2.15.1",
+    "python-gitlab>=8.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/MaraClaw/MaraBrain"
+Repository = "https://github.com/MaraClaw/MaraBrain"
+Issues = "https://github.com/MaraClaw/MaraBrain/issues"
+Documentation = "https://github.com/MaraClaw/MaraBrain#readme"
+
+[project.scripts]
+marabrain = "marabrain.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["marabrain"]
+
+[tool.hatch.build]
+exclude = ["**/.env", "**/.secrets.toml"]
+
+[dependency-groups]
+dev = [
+    "hatchling>=1.33.0",
+    "ruff>=0.17.4",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1",
+    "pytest-cov>=7.1.0",
+    "pytest-xdist>=3.8.0",
+    "ty>=0.0.99",
+    "vulture>=2.16",
+    "pyright>=1.1.414",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--strict-config",
+    "--tb=short",
+]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow tests",
+]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["marabrain"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+    "*/venv/*",
+    "*/.venv/*",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+
+[tool.ty]
+# ty configuration - Astral's fast Python type checker
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.src]
+exclude = [
+    "tests/**",
+    ".venv/**",
+    "scripts/**",
+]
+
+[tool.ty.rules]
+# === Warnings (surface issues without blocking CI) ===
+division-by-zero = "warn"              # Detect potential division by zero
+redundant-cast = "warn"               # Detect unnecessary cast() calls
+deprecated = "warn"                   # Surface deprecated API usage
+
+# === Overrides for test files ===
+[[tool.ty.overrides]]
+include = ["tests/**"]
+
+[tool.ty.overrides.rules]
+possibly-unresolved-reference = "ignore"
+import-not-found = "ignore"
+
+[tool.pyright]
+include = ["marabrain", "tests"]
+exclude = [
+    "**/__pycache__",
+    "**/.venv",
+    "**/venv",
+    "**/node_modules",
+    "**/.pytest_cache",
+    "**/.mypy_cache",
+    "**/.ruff_cache",
+    "**/build",
+    "**/dist",
+    "**/.*"
+]
+ignore = [
+    "**/__pycache__",
+    "**/.venv",
+    "**/venv"
+]
+# === Phase 2: Upgraded to strict mode for better type safety ===
+typeCheckingMode = "strict"
+pythonVersion = "3.14"
+pythonPlatform = "Darwin"
+
+# === Error-level reports (critical issues) ===
+reportMissingImports = "error"
+reportMissingModuleSource = "error"
+reportMissingTypeStubs = "warning"
+reportUndefinedVariable = "error"
+reportInvalidTypeArguments = "error"
+reportGeneralTypeIssues = "error"
+reportMissingReturnType = "error"
+
+# === Warning-level reports (quality improvements) ===
+reportOptionalMemberAccess = "warning"
+reportOptionalCall = "warning"
+reportOptionalIterable = "warning"
+reportOptionalContextManager = "warning"
+reportOptionalOperand = "warning"
+reportUnusedImport = "warning"
+reportUnusedClass = "warning"
+reportUnusedFunction = "warning"
+reportUnusedVariable = "warning"
+reportDuplicateImport = "warning"
+reportWildcardImportFromLibrary = "warning"
+reportPrivateImportUsage = "warning"
+reportUnnecessaryIsInstance = "warning"
+reportUnnecessaryComparison = "warning"
+reportUnnecessaryCast = "warning"
+reportUnnecessaryContains = "warning"
+reportAssertAlwaysTrue = "warning"
+reportSelfClsParameterName = "warning"
+reportUntypedFunctionDecorator = "warning"
+reportUntypedClassDecorator = "warning"
+reportUntypedBaseClass = "warning"
+reportUntypedNamedTuple = "warning"
+reportUnknownArgumentType = "error"
+reportUnknownMemberType = "error"
+reportUnknownParameterType = "error"
+reportUnknownVariableType = "error"
+reportUnknownLambdaType = "error"
+reportExplicitAny = "warning"
+
+# === Disabled (intentional) ===
+reportPrivateUsage = "none"
+
+# === Strict mode additional settings ===
+strictListInference = true
+strictDictionaryInference = true
+strictParameterNoneValue = true
+analyzeUnannotatedFunctions = true
+
+# === Test-specific overrides (relaxed type checking) ===
+[[tool.pyright.overrides]]
+include = ["tests"]
+typeCheckingMode = "standard"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownParameterType = "none"
+reportUnknownVariableType = "none"
+reportUnknownLambdaType = "none"
+reportMissingReturnType = "none"
+reportUntypedFunctionDecorator = "none"
+
+[tool.ruff]
+# Ruff configuration for linting and formatting
+target-version = "py314"
+line-length = 160  # Modern standard for readability, catches all project lines
+
+[tool.ruff.lint]
+# Enable flake8-quotes rules for double quote enforcement
+select = ["E", "F", "W", "Q"]
+ignore = []  # All fixable issues should be handled
+
+[tool.ruff.lint.flake8-quotes]
+# Enforce double quotes throughout
+docstring-quotes = "double"
+multiline-quotes = "double"
+inline-quotes = "double"
+
+[tool.ruff.format]
+# Format with double quotes for inline strings
+# Note: ruff format always uses double quotes for docstrings/multiline
+quote-style = "double"
+docstring-code-format = false
