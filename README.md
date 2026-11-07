@@ -3,13 +3,20 @@
 🦞 Second Brain For OpenClaw-backed Agents.
 
 Python MCP server named `marabrain-mcp`, built with FastMCP. The current interface contains one tool:
-`health`, which returns `{"status": "ok", "version": "0.1.0"}`. It reports that
-the server can handle an MCP request; it does not check external services.
+`health`, which returns `{"status": "ok", "version": "0.1.0"}` only after the
+[Crystalline](https://github.com/jordiboehme/crystalline) background engine answers
+`crystalline ctl status`. Missing executables, failed probes, and probes taking
+longer than two seconds produce an MCP tool error instead of a successful response.
 
 ## Install and run locally
 
 Use [uv](https://docs.astral.sh/uv/). The project requires Python 3.14.4 or newer;
 `.python-version` pins the development interpreter.
+
+Install Crystalline using its [upstream installation instructions](https://github.com/jordiboehme/crystalline#get-started),
+then run `crystalline serve --http off` in a separate terminal before calling
+MaraBrain's `health` tool. The daemon and MaraBrain must use the same user and
+HOME/XDG paths so the control socket is shared.
 
 ```sh
 uv sync --locked

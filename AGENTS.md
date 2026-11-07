@@ -7,8 +7,8 @@
 
 Python FastMCP server named `marabrain-mcp`. Its current MCP interface exposes
 exactly one tool, `health`, returning `{"status":"ok","version":"0.1.0"}`;
-there are no resources or prompts. Health reports process liveness, without
-checking external services.
+there are no resources or prompts. Health also requires the Crystalline daemon
+to answer `crystalline ctl status` within two seconds; engine failure is a tool error.
 
 ## STRUCTURE
 
@@ -105,6 +105,8 @@ uv build
   the stopped named container remains and must be removed before reusing its name.
 - Runtime uses UID/GID 65532, a read-only filesystem, temporary `/tmp`, dropped
   capabilities, and no-new-privileges. Secrets are passed at runtime.
+- Local health checks require a running Crystalline daemon on the same user/XDG
+  paths. A responsive engine does not imply its embedding model is ready.
 - The smoke client chooses `MARABRAIN_HOST_PORT`, then `MARABRAIN_PORT`, then 9110.
 
 ## ANTI-PATTERNS
