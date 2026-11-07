@@ -5,10 +5,11 @@
 
 ## OVERVIEW
 
-Python FastMCP server named `marabrain-mcp`. Its current MCP interface exposes
-exactly one tool, `health`, returning `{"status":"ok","version":"0.1.0"}`;
-there are no resources or prompts. Health also requires the Crystalline daemon
-to answer `crystalline ctl status` within two seconds; engine failure is a tool error.
+Python FastMCP server named `marabrain-mcp`. Its MCP interface exposes exactly six
+tools and no resources or prompts: `health`, returning `{"status":"ok","version":"0.1.0"}`,
+and `create_memory`, `read_memory`, `edit_memory`, `delete_memory`, and `search_memories`,
+which run the pinned Crystalline CLI and return its native JSON. Health also requires the
+Crystalline daemon to answer `crystalline ctl status` within two seconds; engine failure is a tool error.
 
 ## STRUCTURE
 
@@ -16,7 +17,7 @@ to answer `crystalline ctl status` within two seconds; engine failure is a tool 
 MaraBrain/
 |-- marabrain/             # Runtime package; configuration and server factory
 |-- docs/                  # Python docstring standard
-|-- tests/test_server.py   # Automated configuration and MCP transport tests
+|-- tests/                 # Automated configuration, MCP transport, and memory-tool tests
 |-- test_health.py         # Client smoke check against an existing HTTP server
 |-- start-from-docker.sh   # Build, validate, and run a foreground container
 |-- docker-entrypoint.sh   # Supervise Crystalline and the MCP server
@@ -32,13 +33,16 @@ MaraBrain/
 | Task | Location | Notes |
 | --- | --- | --- |
 | Server construction and tool registration | `marabrain/server.py:create_server` | Factory accepts typed settings; tests use it directly |
+| Memory tools | `marabrain/memory_tools.py` | Register five tools; each builds one CLI argv |
+| Memory tool inputs | `marabrain/models.py` | Validated argument types and the discriminated edit union |
+| Crystalline CLI adapter | `marabrain/crystalline.py:run_json` | Single no-retry subprocess call; stdin content, 30-second deadline, fixed errors |
 | Transport startup | `marabrain/server.py:main` | Both console script and module delegate here |
 | Environment parsing | `marabrain/config.py:Settings` | Frozen Pydantic settings with `MARABRAIN_` prefix |
 | Remote embedding startup | `marabrain/embeddings.py` | Validate provider and dimensions, then merge persisted Crystalline configuration |
 | Transport variants | `marabrain/config.py:Transport` | `stdio` and `http`; startup uses exhaustive matching |
 | Application version | `marabrain/__init__.py` | Health model and tests also contain version literals |
 | Runtime deployment | `Dockerfile`, `start-from-docker.sh` | Image security and launcher lifecycle are coupled |
-| Automated behavior contracts | `tests/test_server.py` | Includes stdio subprocess and HTTP security boundaries |
+| Automated behavior contracts | `tests/test_server.py`, `tests/test_memory_tools.py` | Stdio and HTTP security boundaries; memory tools use a fake `crystalline` on PATH |
 | Live endpoint check | `test_health.py` | Requires an existing server and bearer credential |
 
 ## CODE MAP

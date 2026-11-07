@@ -2,11 +2,59 @@
 
 🦞 Second Brain For OpenClaw-backed Agents.
 
-Python MCP server named `marabrain-mcp`, built with FastMCP. The current interface contains one tool:
-`health`, which returns `{"status": "ok", "version": "0.1.0"}` only after the
-[Crystalline](https://github.com/jordiboehme/crystalline) background engine answers
-`crystalline ctl status`. Missing executables, failed probes, and probes taking
+Python MCP server named `marabrain-mcp`, built with FastMCP. The interface contains
+six tools and no resources or prompts. `health` returns `{"status": "ok", "version": "0.1.0"}`
+only after the [Crystalline](https://github.com/jordiboehme/crystalline) background engine
+answers `crystalline ctl status`. Missing executables, failed probes, and probes taking
 longer than two seconds produce an MCP tool error instead of a successful response.
+The other five tools manage memories through the Crystalline CLI; see [Memory tools](#memory-tools).
+
+## Memory tools
+
+The tools run the pinned Crystalline 0.31.0 `crystalline --json` command without a shell,
+send content on stdin, and return its JSON object unchanged (native fields, no added keys).
+The `crystalline` executable must be on `PATH`, with the target domains registered
+in the same HOME/XDG configuration used by MaraBrain. `health` also requires its
+daemon to be running; the Docker image manages both processes. Each memory call
+runs the command once with a 30-second deadline and never retries.
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `create_memory` | `domain`, `title`, `content`, optional `tags` (list), `folder` | Creates a Markdown memory; an existing one is never overwritten |
+| `read_memory` | `domain`, `permalink` | Returns full Markdown with frontmatter, `checksum`, links, observations, and relations |
+| `edit_memory` | `domain`, `permalink`, `operation`, optional `expected_checksum` | Applies one edit operation |
+| `delete_memory` | `domain`, `permalink` | Permanently deletes without confirmation; no checksum guard |
+| `search_memories` | required nonempty `query` and nonempty `domains` (list); optional `tags` (list), `limit` (1-100, default 10), `page` (1 or more, default 1) | Searches the named domains |
+
+`search_memories` requires both query text and at least one domain; a missing, null, empty,
+or whitespace-only value is rejected before anything runs. Each hit includes the `domain` and
+`permalink` to pass to `read_memory`. Edit `operation` is an object whose `type` selects the fields:
+
+| `type` | Fields besides `content` |
+| --- | --- |
+| `append`, `prepend` | none |
+| `find_replace` | `find_text`; optional `expected_replacements` (0 or more) |
+| `replace_section` | `section`; optional `include_subsections` (default false) |
+| `insert_before_section`, `insert_after_section` | `section` |
+
+```json
+{"domain": "notes", "permalink": "team/plan", "expected_checksum": "<checksum from read_memory>",
+ "operation": {"type": "replace_section", "section": "Status", "content": "Shipped."}}
+```
+
+Section content is the section body; the heading line stays. Pass the `checksum` from
+`read_memory` as `expected_checksum` so an edit is refused if the memory changed after
+that read; without it the last write wins. Domain administration, metadata editing, and
+attachments are not exposed.
+
+Arguments are validated before anything runs. Domains, titles, permalinks, folders, and
+queries must not start with a hyphen, contain control characters, or have surrounding
+whitespace. Permalinks and folders must be canonical relative paths (no leading,
+trailing, or doubled slashes, `.` or `..` segments, backslashes, or URLs). Tags must not
+contain commas, and no text may contain NUL. Failures return a fixed error message: Crystalline
+unavailable, a nonzero exit code, malformed output, or a timeout. Raw CLI output and
+diagnostics are never returned. A timeout or crash during a mutation does not guarantee
+that nothing was applied; read the memory to check.
 
 ## Install and run locally
 
