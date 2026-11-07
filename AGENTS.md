@@ -15,6 +15,7 @@ checking external services.
 ```text
 MaraBrain/
 |-- marabrain/             # Runtime package; configuration and server factory
+|-- docs/                  # Python docstring standard
 |-- tests/test_server.py   # Automated configuration and MCP transport tests
 |-- test_health.py         # Client smoke check against an existing HTTP server
 |-- start-from-docker.sh   # Build, validate, and run a foreground container
@@ -50,6 +51,9 @@ Reference counts exclude declarations and include imports and type references.
 
 ## CONVENTIONS
 
+- Follow [the Python docstring standard](docs/python-docstrings.md) for all Python
+  modules, classes, functions, and methods, including tests and MCP tools. Prefer
+  one-sentence PEP 257 docstrings; add Google-style sections only for useful details.
 - Use `uv`; project metadata requires Python >=3.14.4, `.python-version` and
   Docker pin 3.15.2, and lint/type-check targets are 3.14.
 - Hatchling packages `marabrain`; the console entry point is
