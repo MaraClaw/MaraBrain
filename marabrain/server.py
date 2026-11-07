@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, SecretStr
 
 from marabrain import __version__
 from marabrain.config import Settings, Transport
+from marabrain.memory_tools import register_memory_tools
 
 
 class HealthResponse(BaseModel):
@@ -39,7 +40,7 @@ class BearerVerifier(TokenVerifier):
 
 
 def create_server(settings: Settings) -> FastMCP:
-    """Construct the MCP server with its health tool and configured authentication."""
+    """Construct the MCP server with its health and memory tools and configured authentication."""
     auth = BearerVerifier(settings.bearer_secret) if settings.transport == Transport.HTTP and settings.bearer_secret is not None else None
     server = FastMCP("marabrain-mcp", version=__version__, auth=auth, mask_error_details=True, strict_input_validation=True, tasks=False)
 
@@ -53,6 +54,7 @@ def create_server(settings: Settings) -> FastMCP:
             raise ToolError("Crystalline daemon is not responding.") from error
         return HealthResponse()
 
+    register_memory_tools(server)
     return server
 
 
