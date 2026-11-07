@@ -112,6 +112,20 @@ docker stop marabrain
 docker rm marabrain
 ```
 
+## Test local MCP health
+
+With the HTTP server running, open another terminal and run:
+
+```sh
+uv run --no-sync python test_health.py
+```
+
+The script reads the bearer secret from `.env` beside the script or the exported
+environment (exported values take precedence). It calls `health` at
+`http://127.0.0.1:9110/mcp`, using `MARABRAIN_HOST_PORT` or `MARABRAIN_PORT` if
+configured. A valid `ok` response prints `PASS` and the response JSON. Connection,
+authentication, tool, or response validation failures exit with a nonzero status.
+
 ## Development checks
 
 ```sh
