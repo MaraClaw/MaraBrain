@@ -5,6 +5,8 @@
 # ///
 # How to run: uv run --no-sync python test_health.py
 
+"""Smoke check for a running local MaraBrain HTTP MCP server."""
+
 from __future__ import annotations
 
 import os
@@ -20,6 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 class HealthResult(BaseModel):
+    """Validated health response with an ok status and a nonempty version."""
+
     model_config = ConfigDict(frozen=True)
 
     status: Literal["ok"]
@@ -27,6 +31,7 @@ class HealthResult(BaseModel):
 
 
 async def main() -> None:
+    """Call the local HTTP health tool and print its validated response."""
     load_dotenv(Path(__file__).with_name(".env"))
     secret = os.environ.get("MARABRAIN_BEARER_SECRET")
     if not secret:

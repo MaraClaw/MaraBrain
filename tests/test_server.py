@@ -1,3 +1,5 @@
+"""Behavior tests for server configuration and MCP transport boundaries."""
+
 import sys
 
 import pytest
@@ -12,6 +14,7 @@ from marabrain.server import create_server
 
 @pytest.mark.parametrize("transport", list(Transport))
 def test_transport_environment_parses_enum(monkeypatch: pytest.MonkeyPatch, transport: Transport) -> None:
+    """Verify that each supported transport parses from the environment."""
     monkeypatch.setenv("MARABRAIN_TRANSPORT", transport.value)
     monkeypatch.setenv("MARABRAIN_BEARER_SECRET", "s" * 32)
     assert Settings().transport is transport
@@ -21,12 +24,14 @@ def test_transport_environment_parses_enum(monkeypatch: pytest.MonkeyPatch, tran
     "name,value", [("MARABRAIN_TRANSPORT", "sse"), ("MARABRAIN_PORT", "0"), ("MARABRAIN_PORT", "65536"), ("MARABRAIN_LOG_LEVEL", "verbose")]
 )
 def test_invalid_environment_is_rejected(monkeypatch: pytest.MonkeyPatch, name: str, value: str) -> None:
+    """Verify that invalid environment settings raise validation errors."""
     monkeypatch.setenv(name, value)
     with pytest.raises(ValidationError):
         Settings()
 
 
 def test_http_secret_is_required_and_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that HTTP requires a secret and redacts it from errors and representations."""
     monkeypatch.setenv("MARABRAIN_TRANSPORT", "http")
     with pytest.raises(ValidationError):
         Settings()
@@ -40,6 +45,7 @@ def test_http_secret_is_required_and_redacted(monkeypatch: pytest.MonkeyPatch) -
 
 @pytest.mark.asyncio
 async def test_mcp_inventory_and_health() -> None:
+    """Verify the MCP server identity, interface inventory, and health response."""
     async with Client(create_server(Settings())) as client:
         assert client.server_info is not None
         assert client.server_info.name == "marabrain-mcp"
@@ -56,6 +62,7 @@ async def test_mcp_inventory_and_health() -> None:
 
 @pytest.mark.asyncio
 async def test_module_stdio_entrypoint() -> None:
+    """Verify that the module entry point serves health requests over stdio."""
     transport = StdioTransport(command=sys.executable, args=["-m", "marabrain"])
     async with Client(transport, timeout=10) as client:
         result = await client.call_tool("health", {})
@@ -63,6 +70,7 @@ async def test_module_stdio_entrypoint() -> None:
 
 
 def test_http_auth_and_host_origin_protection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify HTTP authentication, host and origin restrictions, and authorized health requests."""
     monkeypatch.setenv("MARABRAIN_TRANSPORT", "http")
     monkeypatch.setenv("MARABRAIN_BEARER_SECRET", "s" * 32)
     settings = Settings()
