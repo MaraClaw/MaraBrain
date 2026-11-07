@@ -73,6 +73,45 @@ keep-alive timeout, and allows 5 seconds for graceful shutdown. Give your proces
 supervisor a longer termination grace period. Server errors are masked in MCP
 responses; credentials are redacted from configuration errors.
 
+## Docker
+
+The multi-stage image uses `python:3.15.2-slim`, installs locked production
+dependencies, and runs HTTP as a non-root user. Copy `.env.example` to `.env`
+and set `MARABRAIN_BEARER_SECRET` to a generated secret as described above, then run:
+
+```sh
+./start-from-docker.sh
+```
+
+The launcher sources `.env` beside the script before validating configuration,
+regardless of your current directory. Values in `.env` override exported values.
+If `.env` is absent, it uses the exported environment. Container startup always
+uses HTTP, even if `.env` sets `MARABRAIN_TRANSPORT=stdio` for local use.
+
+The launcher builds `marabrain:latest` and runs a foreground container named
+`marabrain`, streaming its logs and publishing `http://127.0.0.1:9110/mcp`.
+Press `Ctrl+C` to stop the server and end log monitoring. It uses a read-only root
+filesystem, a temporary `/tmp`, dropped Linux capabilities, and an authenticated
+MCP healthcheck. The secret is passed at runtime and is never baked into the
+image. Docker administrators can inspect container environment variables; keep
+access to the Docker daemon restricted.
+
+Override `MARABRAIN_IMAGE`, `MARABRAIN_CONTAINER`, or `MARABRAIN_HOST_PORT` to
+choose an image tag, container name, or local port. The host and origin allowlists
+from the table above are also forwarded. The host port remains bound to loopback;
+put a TLS reverse proxy in front for remote access. The script validates the
+configuration before starting the service and never replaces an existing
+container automatically.
+
+When overriding `MARABRAIN_ALLOWED_HOSTS`, retain `127.0.0.1` alongside your
+public hostname so the container's internal healthcheck remains authorized.
+
+```sh
+docker logs -f marabrain
+docker stop marabrain
+docker rm marabrain
+```
+
 ## Development checks
 
 ```sh
