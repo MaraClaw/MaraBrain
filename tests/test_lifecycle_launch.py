@@ -17,6 +17,7 @@ from test_engine_lifecycle import runtime as runtime
 from marabrain.config import Settings
 from marabrain.engine_context import EngineContext
 from marabrain.lifecycle import engine_lifecycle, run_startup_command
+from marabrain.transient import ProcessAdmissionError
 
 
 @pytest.mark.parametrize("phase", ["client", "daemon"])
@@ -26,7 +27,7 @@ async def test_interrupted_launch_handoff_reaps_child_before_next_command(runtim
     """Acquire the real launch handle under shielding and clean up before dispatching again."""
     open_process = anyio.open_process
     current_time = anyio.current_time
-    context = EngineContext.capture()
+    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=1024)
     deadline = current_time() + 30
     owned: list[int] = []
     client = [
@@ -50,6 +51,9 @@ async def test_interrupted_launch_handoff_reaps_child_before_next_command(runtim
             if list(command) == target:
                 owned.append(process.pid)
                 await await_file(runtime / ("client-started" if phase == "client" else "owner"))
+                if phase == "client":
+                    with pytest.raises(ProcessAdmissionError):
+                        await run_startup_command(client, context)
                 if interrupt == "cancel":
                     cancellation.cancel()
                 else:
@@ -72,6 +76,9 @@ async def test_interrupted_launch_handoff_reaps_child_before_next_command(runtim
     if phase == "daemon":
         assert len(list(runtime.glob("child-*"))) == 2
     assert_reaped(runtime)
+    if interrupt == "expire":
+        monkeypatch.setattr(anyio, "current_time", current_time)
+    assert await run_startup_command([sys.executable, "-c", "print('{}')"], context) == b"{}\n"
 
 
 @pytest.mark.asyncio
