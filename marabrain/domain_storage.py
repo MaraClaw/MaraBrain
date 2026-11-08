@@ -11,6 +11,8 @@ from pathlib import Path
 import anyio
 from fastmcp.exceptions import ToolError
 
+from marabrain.engine_context import EngineContext
+
 
 def safe_path(path: Path) -> Path:
     """Reject symlinks in every existing component of an absolute storage path."""
@@ -31,10 +33,10 @@ class DomainStorage:
     timeout: float
 
     @classmethod
-    def from_environment(cls, timeout: float) -> DomainStorage:
+    def from_environment(cls, timeout: float, *, context: EngineContext | None = None) -> DomainStorage:
         """Capture the writable XDG state location independently of the working directory."""
-        state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-        return cls(state / "marabrain", timeout)
+        captured = context if context is not None else EngineContext.capture()
+        return cls(captured.state_home / "marabrain", timeout)
 
     @asynccontextmanager
     async def locked(self) -> AsyncGenerator[Path]:
