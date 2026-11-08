@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.14.4"
-# dependencies = ["fastmcp==4.1.6", "mcp>=2.3.0", "anyio>=4.16.0", "python-dotenv>=1.2.4", "pydantic>=2.14.3"]
+# dependencies = ["fastmcp>=4.1.6", "mcp>=2.3.0", "anyio>=4.16.0", "python-dotenv>=1.2.4", "pydantic>=2.14.3"]
 # ///
 # How to run: uv run --no-sync python test_health.py
 
