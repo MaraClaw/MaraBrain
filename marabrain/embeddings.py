@@ -6,15 +6,17 @@ import tempfile
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Annotated, Final, Literal
+from typing import Annotated, Final, Literal, Self
 
 import httpx
 import yaml
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
+from marabrain.credentials import resolve_secret
+
 ENV_PREFIX: Final = "EMBEDDING_"
-ENV_NAMES: Final = ("EMBEDDING_MODEL", "EMBEDDING_PROVIDER_URL", "EMBEDDING_DIMS", "EMBEDDING_API_KEY")
+ENV_NAMES: Final = ("EMBEDDING_MODEL", "EMBEDDING_PROVIDER_URL", "EMBEDDING_DIMS", "EMBEDDING_API_KEY", "EMBEDDING_API_KEY_FILE")
 TIMEOUT_SECONDS: Final = 10.0
 MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
 PROBE_INPUT: Final = "MaraBrain embeddings probe"
@@ -36,6 +38,19 @@ class EmbeddingSettings(BaseModel):
     provider_url: AnyHttpUrl
     dims: Annotated[int, Field(gt=0)]
     api_key: SecretStr | None = None
+    api_key_file: Path | None = None
+
+    @field_validator("api_key_file", mode="before")
+    @classmethod
+    def empty_key_file(cls, value: Path | str | None) -> Path | str | None:
+        """Treat an empty credential file setting as absent."""
+        return value or None
+
+    @model_validator(mode="after")
+    def resolve_api_key(self) -> Self:
+        """Resolve the API key once for direct model consumers."""
+        object.__setattr__(self, "api_key", resolve_secret(self.api_key, self.api_key_file))
+        return self
 
     @field_validator("provider_url")
     @classmethod
@@ -76,7 +91,7 @@ def load_settings() -> EmbeddingSettings | None:
         return EmbeddingSettings.model_validate({name.removeprefix(ENV_PREFIX).lower(): os.environ[name] for name in ENV_NAMES if os.environ.get(name)})
     except ValidationError as error:
         issues = error.errors(include_input=False, include_url=False, include_context=False)
-        problems = "; ".join(f"{ENV_PREFIX}{str(issue['loc'][0]).upper()}: {issue['msg']}" for issue in issues)
+        problems = "; ".join(f"{ENV_PREFIX}{str(issue['loc'][0]).upper() if issue['loc'] else 'API_KEY'}: {issue['msg']}" for issue in issues)
         raise EmbeddingsError(f"invalid configuration ({problems})") from None
 
 
@@ -142,18 +157,24 @@ def write_config(settings: EmbeddingSettings) -> None:
         raise EmbeddingsError(f"cannot write {path}: {error.strerror}") from None
 
 
+def initialize_embeddings() -> dict[str, str]:
+    """Validate and configure embeddings, returning the daemon's credential environment overlay."""
+    settings = load_settings()
+    if settings is None:
+        return {}
+    probe(settings)
+    write_config(settings)
+    print(f"marabrain.embeddings: configured remote embeddings (model {settings.model}, {settings.dims} dimensions)", file=sys.stderr)
+    return {"EMBEDDING_API_KEY": settings.api_key.get_secret_value()} if settings.api_key is not None else {}
+
+
 def main() -> int:
     """Configure remote embeddings when EMBEDDING_ variables are set and return the process exit status."""
     try:
-        settings = load_settings()
-        if settings is None:
-            return 0
-        probe(settings)
-        write_config(settings)
+        initialize_embeddings()
     except EmbeddingsError as error:
         print(f"marabrain.embeddings: {error}", file=sys.stderr)
         return 1
-    print(f"marabrain.embeddings: configured remote embeddings (model {settings.model}, {settings.dims} dimensions)", file=sys.stderr)
     return 0
 
 
