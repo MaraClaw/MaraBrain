@@ -6,13 +6,16 @@ import sys
 from pathlib import Path
 
 import anyio
+import httpx2
 import pytest
 from fastmcp import Client
-from fastmcp.client.transports import StdioTransport
+from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
 from fastmcp.exceptions import ToolError
 from memory_fake import RECEIPT, calls, domain_list
 from pydantic import SecretStr, ValidationError
 from starlette.testclient import TestClient
+from starlette.applications import Starlette
+from transport_process_policy import CAPTURE_BYTES, PRIVATE_OUTPUT, assert_transport_process_policy, process_probe
 
 from marabrain.config import Settings, Transport
 from marabrain.domain_registry import DomainRegistry
@@ -215,3 +218,51 @@ def test_http_domain_policy_denies_before_command(cli: Path) -> None:
         allowed = client.post("/mcp", headers=headers, json=payload)
         assert allowed.json()["result"]["structuredContent"] == RECEIPT
     assert len(calls(cli)) == 1
+
+
+async def test_http_process_limits_are_application_owned_and_reusable(
+    cli: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Keep authenticated HTTP applications' limits independent after environment changes."""
+    settings = Settings(
+        transport=Transport.HTTP,
+        bearer_secret=SecretStr("s" * 32),
+        max_transient_processes=2,
+        max_capture_bytes=CAPTURE_BYTES,
+        command_timeout_seconds=60,
+        health_timeout_seconds=60,
+    )
+
+    def transport(app: Starlette) -> StreamableHttpTransport:
+        """Connect the MCP HTTP client through the application's authenticated ASGI stack."""
+
+        def factory(
+            headers: dict[str, str] | None = None,
+            timeout: httpx2.Timeout | None = None,
+            auth: httpx2.Auth | None = None,
+            *,
+            follow_redirects: bool = True,
+        ) -> httpx2.AsyncClient:
+            """Supply the four options required by the MCP HTTP transport factory contract."""
+            return httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(app),
+                headers=headers,
+                auth=auth,
+                timeout=timeout or httpx2.Timeout(5),
+                follow_redirects=follow_redirects,
+            )
+
+        return StreamableHttpTransport("http://localhost/mcp", auth="s" * 32, httpx_client_factory=factory)
+
+    with anyio.fail_after(30):
+        async with process_probe(cli) as probe:
+            app = create_server(settings).http_app(stateless_http=True, json_response=True, host_origin_protection=True)
+            other = create_server(settings.model_copy(update={"max_capture_bytes": CAPTURE_BYTES * 2})).http_app(
+                stateless_http=True, json_response=True, host_origin_protection=True
+            )
+            monkeypatch.setenv("MARABRAIN_MAX_TRANSIENT_PROCESSES", "3")
+            monkeypatch.setenv("MARABRAIN_MAX_CAPTURE_BYTES", "16")
+            async with app.router.lifespan_context(app), other.router.lifespan_context(other):
+                async with Client(transport(app)) as client, Client(transport(other)) as independent:
+                    await assert_transport_process_policy(client, probe, independent)
+    assert PRIVATE_OUTPUT not in "".join(capfd.readouterr()) + caplog.text
