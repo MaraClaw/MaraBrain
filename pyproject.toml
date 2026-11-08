@@ -94,6 +94,7 @@ addopts = [
     "--strict-markers",
     "--strict-config",
     "--tb=short",
+    "--ignore=tests/integration",
 ]
 markers = [
     "unit: Unit tests",
