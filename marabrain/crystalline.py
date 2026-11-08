@@ -11,8 +11,10 @@ import anyio
 from fastmcp.exceptions import ToolError
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
+from marabrain.command_io import communicate
 from marabrain.deadlines import check_deadline
 from marabrain.engine_context import EngineContext
+from marabrain.transient import StdoutCapture, TransientLimitError
 
 JsonObject = dict[str, JsonValue]
 _OUTPUT = TypeAdapter(JsonObject)
@@ -20,9 +22,9 @@ _LOGGER = logging.getLogger(__name__)
 _OPERATIONS = frozenset({"write", "read", "edit", "delete", "search"})
 
 
-async def _run_command(arguments: Sequence[str], data: bytes, context: EngineContext, deadline: float) -> subprocess.CompletedProcess[bytes]:
+async def _run_command(arguments: Sequence[str], data: bytes, context: EngineContext, deadline: float) -> subprocess.CompletedProcess[bytearray]:
     """Retain ownership through launch cancellation and reap the CLI before returning."""
-    result = Future[subprocess.CompletedProcess[bytes]]()
+    result = Future[subprocess.CompletedProcess[bytearray]]()
     cancelled = threading.Event()
     finished = anyio.Event()
     token = anyio.lowlevel.current_token()
@@ -44,30 +46,41 @@ async def _run_command(arguments: Sequence[str], data: bytes, context: EngineCon
                 env=context.environment,
             ) as child:
                 process = child
-                if cancelled.is_set():
-                    child.kill()
-                output, _ = child.communicate(data or None)
-                result.set_result(subprocess.CompletedProcess(child.args, child.returncode, output))
+                try:
+                    if cancelled.is_set():
+                        child.kill()
+                    output = communicate(child, data, StdoutCapture(context.transients.max_capture_bytes))
+                    result.set_result(subprocess.CompletedProcess(child.args, child.returncode, output))
+                finally:
+                    if child.poll() is None:
+                        try:
+                            child.kill()
+                        except ProcessLookupError:
+                            child.poll()
+                    child.wait()
         except BaseException as error:
             # Transfer worker failures unchanged to the async boundary.
             result.set_exception(error)
         finally:
             anyio.from_thread.run_sync(finished.set, token=token)
 
-    worker = threading.Thread(target=execute, name="marabrain-cli")
-    worker.start()
-    try:
-        await finished.wait()
-        return result.result()
-    finally:
-        cancelled.set()
-        if process is not None and process.poll() is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                process.poll()
-        with anyio.CancelScope(shield=True):
-            await anyio.to_thread.run_sync(worker.join)
+    await anyio.lowlevel.checkpoint()
+    check_deadline(deadline)
+    with context.transients.admit():
+        worker = threading.Thread(target=execute, name="marabrain-cli")
+        worker.start()
+        try:
+            await finished.wait()
+            return result.result()
+        finally:
+            cancelled.set()
+            if process is not None and process.poll() is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    process.poll()
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(worker.join)
 
 
 async def run_json(
@@ -97,6 +110,9 @@ async def run_json(
     except OSError as error:
         _LOGGER.error("crystalline.failure operation=%s category=unavailable elapsed_ms=%.1f", operation, (time.monotonic() - started) * 1000)
         raise ToolError("Crystalline is unavailable.") from error
+    except TransientLimitError as error:
+        _LOGGER.error("crystalline.failure operation=%s category=resource_limit elapsed_ms=%.1f", operation, (time.monotonic() - started) * 1000)
+        raise ToolError(str(error)) from None
     if result.returncode != 0:
         _LOGGER.error(
             "crystalline.failure operation=%s category=exit elapsed_ms=%.1f exit_code=%d", operation, (time.monotonic() - started) * 1000, result.returncode
