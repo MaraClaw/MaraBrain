@@ -18,6 +18,10 @@ plan = json.loads((root / "plan.json").read_text())
 with (root / "calls.jsonl").open("a") as log:
     log.write(json.dumps({{"argv": sys.argv[1:], "stdin": sys.stdin.read(), "pid": os.getpid()}}) + "\\n")
 sys.stderr.write("{NOISE}")
+args = sys.argv[1:]
+if args == ["--json", "domain", "list"]:
+    print(json.dumps({{"domains": json.loads((root / "domains.json").read_text())}}))
+    sys.exit(0)
 if plan["hang"]:
     time.sleep(60)
 sys.stdout.write(plan["stdout"])
@@ -34,6 +38,11 @@ def calls(cli: Path) -> list[dict[str, object]]:
     """Return the argv, stdin, and pid recorded by each fake crystalline invocation."""
     log = cli / "calls.jsonl"
     return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def domain_list(cli: Path, names: list[str]) -> None:
+    """Configure the authoritative domain identities returned by the fake engine."""
+    (cli / "domains.json").write_text(json.dumps([{"name": name} for name in names]))
 
 
 async def call(tool: str, arguments: dict[str, object]) -> dict[str, object] | None:
