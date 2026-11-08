@@ -1,5 +1,6 @@
 """MCP tools that create, read, edit, delete, and search memories through Crystalline."""
 
+import json
 from typing import assert_never
 
 from fastmcp import FastMCP
@@ -17,6 +18,7 @@ from marabrain.models import (
     InsertAfterSectionEdit,
     InsertBeforeSectionEdit,
     Limit,
+    Metadata,
     Page,
     Permalink,
     PrependEdit,
@@ -49,9 +51,15 @@ def register_memory_tools(server: FastMCP) -> None:
     """Register the five Crystalline-backed memory tools on the server."""
 
     @server.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
-    async def create_memory(domain: Domain, title: Title, content: Content, tags: Tags | None = None, folder: Folder | None = None) -> JsonObject:
+    async def create_memory(
+        domain: Domain, title: Title, content: Content, tags: Tags | None = None, folder: Folder | None = None, metadata: Metadata | None = None
+    ) -> JsonObject:
         """Create a new Markdown memory in a domain; an existing memory is never overwritten. Returns Crystalline's receipt, including its permalink."""
-        options = [*([] if tags is None else [f"--tags={','.join(tags)}"]), *([] if folder is None else [f"--folder={folder}"])]
+        options = [
+            *([] if tags is None else [f"--tags={','.join(tags)}"]),
+            *([] if folder is None else [f"--folder={folder}"]),
+            *([] if metadata is None else ["--metadata", json.dumps(metadata, allow_nan=False)]),
+        ]
         return await run_json(["write", domain, title, *options], content)
 
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False})
