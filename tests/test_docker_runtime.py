@@ -34,7 +34,7 @@ def test_launcher_forwards_controls_and_mounts_in_both_containers(launcher: Path
     key = launcher / "key"
     bearer.write_text(SECRET)
     key.write_text(SECRET)
-    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_"))}
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
     environment.update(
         PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}",
         DOCKER_LOG=str(launcher / "calls"),
@@ -44,6 +44,15 @@ def test_launcher_forwards_controls_and_mounts_in_both_containers(launcher: Path
         MARABRAIN_COMMAND_TIMEOUT_SECONDS="42",
         MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS="12",
         MARABRAIN_LOG_LEVEL="debug",
+        LLM_MODEL="compression-model",
+        LLM_PROVIDER="openai",
+        LLM_PROVIDER_URL="https://api.openai.com/v1",
+        LLM_API_KEY=SECRET,
+        LLM_REASONING_EFFORT="low",
+        LLM_TEMPERATURE="0.5",
+        LLM_MAX_INPUT_TOKENS="256000",
+        LLM_MAX_TOKENS="2048",
+        LLM_TIMEOUT_SECONDS="30",
     )
     if domains is not None:
         environment["MARABRAIN_ALLOWED_DOMAINS"] = domains
@@ -61,6 +70,15 @@ def test_launcher_forwards_controls_and_mounts_in_both_containers(launcher: Path
             "MARABRAIN_COMMAND_TIMEOUT_SECONDS",
             "MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS",
             "MARABRAIN_LOG_LEVEL",
+            "LLM_MODEL",
+            "LLM_PROVIDER",
+            "LLM_PROVIDER_URL",
+            "LLM_API_KEY",
+            "LLM_REASONING_EFFORT",
+            "LLM_TEMPERATURE",
+            "LLM_MAX_INPUT_TOKENS",
+            "LLM_MAX_TOKENS",
+            "LLM_TIMEOUT_SECONDS",
         ):
             assert name in args
             assert call["env"].get(name) == environment.get(name)

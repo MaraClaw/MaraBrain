@@ -9,6 +9,7 @@ from pydantic_core import PydanticCustomError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from marabrain.credentials import resolve_secret
+from marabrain.llm_config import LLMSettings
 from marabrain.models import Domain
 
 
@@ -44,6 +45,7 @@ class Settings(BaseSettings):
     command_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 30.0
     engine_mode: EngineMode = EngineMode.EXTERNAL
     engine_startup_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 30.0
+    llm: LLMSettings = Field(default_factory=LLMSettings)
 
     @field_validator("bearer_secret_file", mode="before")
     @classmethod

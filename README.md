@@ -3,7 +3,7 @@
 🦞 Second Brain For OpenClaw-backed Agents.
 
 Python MCP server named `marabrain-mcp`, built with FastMCP. The interface contains
-six tools and no resources or prompts. `health` returns `{"status": "ok", "version": "0.2.0"}`
+six tools and no resources or prompts. `health` returns `{"status": "ok", "version": "0.3.0"}`
 only after the [Crystalline](https://github.com/jordiboehme/crystalline) background engine
 answers `crystalline ctl status`. Missing executables, failed probes, and probes taking
 longer than the configured health deadline produce an MCP tool error instead of a successful response.
@@ -12,7 +12,8 @@ The other five tools manage memories through the Crystalline CLI; see [Memory to
 ## Memory tools
 
 The tools run the pinned Crystalline 0.31.0 `crystalline --json` command without a shell,
-send content on stdin, and return its JSON object unchanged (native fields, no added keys).
+send content on stdin, and return its JSON object unchanged (native fields, no added keys)
+unless `read_memory` is called with `compress=true`, as described below.
 The `crystalline` executable must be on `PATH`, using the same HOME/XDG configuration
 as MaraBrain. `health` also requires its daemon to be running; the Docker image manages
 both processes. Each CLI command has a configurable 30-second default deadline and
@@ -42,14 +43,37 @@ even when the original command reports failure. Restart also reconciles the comp
 | Tool | Arguments | Effect |
 | --- | --- | --- |
 | `create_memory` | `domain`, `title`, `content`, optional `tags` (list), `folder`, `metadata` (JSON object) | Creates a Markdown memory; an existing one is never overwritten |
-| `read_memory` | `domain`, `permalink` | Returns full Markdown with frontmatter, `checksum`, links, observations, and relations |
+| `read_memory` | `domain`, `permalink`; optional `compress` (boolean, default false), `query` (default null) | Returns full Markdown with frontmatter, `checksum`, links, observations, and relations; compression replaces returned `content` with distilled context and adds `compressed: true` |
 | `edit_memory` | `domain`, `permalink`, `operation`, optional `expected_checksum` | Applies one edit operation |
 | `delete_memory` | `domain`, `permalink` | Permanently deletes without confirmation; no checksum guard |
-| `search_memories` | required nonempty `query` and nonempty `domains` (list); optional `tags` (list), `limit` (1-100, default 10), `page` (1 or more, default 1) | Searches the named domains |
+| `search_memories` | required nonempty `query` and nonempty `domains` (list); optional `tags` (list), `limit` (1-100, default 10), `page` (1 or more, default 1) | Searches the named domains and returns native JSON unchanged |
 
 `search_memories` requires both query text and at least one domain; a missing, null, empty,
 or whitespace-only value is rejected before anything runs. Each hit includes the `domain` and
-`permalink` to pass to `read_memory`. Edit `operation` is an object whose `type` selects the fields:
+`permalink` to pass to `read_memory`.
+
+`read_memory(domain, permalink, compress=false, query=None)` leaves normal reads unchanged:
+with `compress=false`, it returns native JSON and full content without calling an LLM.
+With `compress=true`, a nonempty, non-whitespace `query` is required. The
+[configured LLM provider](#optional-read-compression) distills the full memory against
+that query; the response replaces `content` with the distilled context and adds
+`compressed: true`, preserving the other fields. The original `checksum` remains the
+source memory's checksum, not a checksum of the distilled context, and can still be
+used as `expected_checksum` for an edit.
+
+Only `compress=true` discloses the full memory content and query to the chosen LLM
+provider. Compression never writes or modifies the source memory. It can reduce context
+passed to the calling agent, but does not reduce storage read I/O. Read or provider
+errors surface as tool errors; there is no fallback to uncompressed content.
+`search_memories` is unchanged and does not accept compression arguments or call an LLM.
+
+For example, pass these MCP arguments to `read_memory`:
+
+```json
+{"domain": "notes", "permalink": "team/plan", "compress": true, "query": "What is the current rollout plan?"}
+```
+
+Edit `operation` is an object whose `type` selects the fields:
 
 | `type` | Fields besides `content` |
 | --- | --- |
@@ -254,6 +278,49 @@ configuration and skips the remote-provider check. A fresh volume then uses the
 default local model. Changing providers or models does not automatically migrate
 existing vectors; follow Crystalline's indexing guidance before reusing an index
 with a different embedding space.
+
+### Optional read compression
+
+Configure a text-generation model before calling `read_memory` with `compress=true`.
+Set these variables in `.env` for Docker, or export them for local startup. Generation
+settings are separate from embedding settings; an embedding model cannot generate context.
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `LLM_MODEL` | unset | Text-generation model accepted by the chosen provider |
+| `LLM_PROVIDER_URL` | unset | API base URL: include `/v1` for OpenAI; use the gateway root for the Claude Agent SDK |
+| `LLM_API_KEY` | unset | Provider credential; required for Anthropic, optional only for keyless OpenAI-compatible hosts |
+| `LLM_PROVIDER` | `openai` | `openai` (including compatible hosts) or `anthropic` |
+| `LLM_REASONING_EFFORT` | unset | Optional `low`, `medium`, or `high`; requires model support |
+| `LLM_TEMPERATURE` | unset | Optional OpenAI sampling temperature from 0 through 2; rejected for Claude |
+| `LLM_MAX_INPUT_TOKENS` | `256000` | Claude Agent SDK's assumed context window; OpenAI uses the selected model's context window |
+| `LLM_MAX_TOKENS` | `32768` | Maximum generated output tokens |
+| `LLM_TIMEOUT_SECONDS` | `60` | Provider request timeout in seconds |
+
+For OpenAI, for example, set `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4.1-mini`,
+and `LLM_PROVIDER_URL=https://api.openai.com/v1`, then supply your `LLM_API_KEY`.
+For Anthropic, set `LLM_PROVIDER=anthropic`, `LLM_MODEL=claude-sonnet-4-20250514`,
+and `LLM_PROVIDER_URL=https://api.anthropic.com`, then supply your Anthropic key.
+Use a model available to your account and omit sampling or effort settings it does not
+support. OpenAI uses the asynchronous OpenAI SDK with a structured response schema.
+Claude uses the Claude Agent SDK with structured output, disabled ordinary tools,
+and isolated temporary configuration. Claude reasoning effort uses adaptive thinking
+and requires a model that supports it. Leave `LLM_TEMPERATURE` empty for Claude;
+the Agent SDK does not expose temperature.
+Some models reject sampling or effort even within the configured ranges.
+
+The 256K setting means 256,000 tokens and maps to Claude Code's
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS`. It is a context-window hint, not a hard input
+token check before dispatch. OpenAI-compatible Chat Completions has no equivalent
+request parameter, so the provider's model limit applies. `LLM_MAX_TOKENS` is a
+separate output budget; Claude's agent may make multiple requests to produce the
+structured result.
+
+The launcher exports and forwards every `LLM_*` variable listed above to both the
+configuration preflight and runtime container. Settings are parsed at startup; restart
+after changing them. LLM settings and credentials are not persisted in Crystalline
+configuration or baked into the image. Configuration validation does not verify live
+provider compatibility or credentials.
 
 Override `MARABRAIN_IMAGE`, `MARABRAIN_CONTAINER`, `MARABRAIN_HOST_PORT`, or
 `MARABRAIN_DATA_VOLUME` to choose an image tag, container name, local port, or

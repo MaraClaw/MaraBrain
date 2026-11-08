@@ -31,7 +31,7 @@ class HealthResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     status: Literal["ok"] = "ok"
-    version: Literal["0.2.0"] = __version__
+    version: Literal["0.3.0"] = __version__
 
 
 class BearerVerifier(TokenVerifier):
@@ -63,7 +63,7 @@ def create_server(settings: Settings) -> FastMCP:
             raise ToolError("Crystalline daemon is not responding.")
         return HealthResponse()
 
-    register_memory_tools(server, allowed_domains=policy, command_timeout_seconds=settings.command_timeout_seconds)
+    register_memory_tools(server, allowed_domains=policy, command_timeout_seconds=settings.command_timeout_seconds, llm_settings=settings.llm)
     return server
 
 
