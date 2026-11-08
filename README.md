@@ -182,6 +182,8 @@ restarting the server.
 | `MARABRAIN_ALLOWED_DOMAINS` | unset | JSON array of permitted exact domain names; unset allows all, `[]` denies all memory operations |
 | `MARABRAIN_HEALTH_TIMEOUT_SECONDS` | `2` | Positive finite health probe deadline in seconds |
 | `MARABRAIN_COMMAND_TIMEOUT_SECONDS` | `30` | Positive finite memory command deadline in seconds |
+| `MARABRAIN_STARTUP_TIMEOUT_SECONDS` | unset (disabled) | Optional positive finite total startup preparation budget in seconds; empty also disables it |
+| `MARABRAIN_OPERATION_TIMEOUT_SECONDS` | unset (disabled) | Optional positive finite total budget for each memory operation's Crystalline phase in seconds; empty also disables it |
 | `MARABRAIN_ENGINE_MODE` | `external` | `external` or `managed`; Docker's default command selects `managed` |
 | `MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS` | `30` | Positive finite managed engine readiness budget in seconds after daemon launch |
 
@@ -192,6 +194,34 @@ resolve aliases, or redact linked metadata. A mixed allowed and denied search is
 rejected in full. Docker's independent healthcheck has a three-second HTTP timeout
 and five-second outer timeout regardless of the health probe deadline; client
 timeouts and HTTP shutdown grace are separate limits too.
+
+The two optional total budgets are independent. Startup's total begins before
+preparation and covers the existing-engine check, embedding initialization, managed
+daemon launch and readiness, and initial domain synchronization as applicable. It
+ends before serving starts and never limits the server's serving lifetime. Each
+memory operation's total begins before domain resolution and spans lock acquisition,
+domain synchronization and registration, and the final memory command. Compressed
+reads then use their separate `LLM_TIMEOUT_SECONDS` budget for LLM compression.
+Existing command, health, and engine readiness caps still apply with their unchanged
+defaults; a total budget can shorten a step's available time but never extends its cap.
+For example, set `MARABRAIN_STARTUP_TIMEOUT_SECONDS=45` and
+`MARABRAIN_OPERATION_TIMEOUT_SECONDS=10` to enable both totals, or leave either empty
+or unset to disable it. Zero, negative, nonfinite, and malformed values are rejected.
+
+After expiry is observed, no further Crystalline command is dispatched. Cancellation
+and cleanup still reap owned children, release locks, and close SQLite connections,
+which may outlast the budget; these settings do not promise an exact response deadline.
+Mutations with uncertain outcomes are never retried automatically. The next operation
+or startup reconciles uncertain domain registration before trusting cached routes.
+
+Each application captures an immutable snapshot of its engine execution environment
+at `run_application()` entry or standalone `create_server()` construction. Registry
+paths and configuration identity, health checks, initialization, daemon supervision,
+and memory tools use that snapshot, including HOME/XDG defaults and supported
+`CRYSTALLINE_CONFIG` selection. Later process environment changes do not redirect an
+existing application. Initializer credential overlays apply only to that application's
+owned daemon. External mode retains its captured CLI environment; a successful health
+probe does not identify the external daemon's configuration.
 
 Environment variables are read at startup. An originless MCP client is accepted;
 browser clients must use an explicitly allowed origin. Avoid wildcard host or
@@ -219,7 +249,8 @@ uses HTTP, even if `.env` sets `MARABRAIN_TRANSPORT=stdio` for local use.
 
 The launcher builds `marabrain:latest` and runs a foreground container named
 `marabrain`, streaming its logs and publishing `http://127.0.0.1:9110/mcp`.
-Press `Ctrl+C` to stop the server and end log monitoring. It uses a read-only root
+Press `Ctrl+C` to stop the server and remove its container; the named data volume
+is preserved. It uses a read-only root
 filesystem, a temporary `/tmp`, dropped Linux capabilities, and an authenticated
 MCP healthcheck. The secret is passed at runtime and is never baked into the
 image. Alternatively set `MARABRAIN_BEARER_SECRET_FILE` to an absolute host file
@@ -329,6 +360,10 @@ from the table above and `MARABRAIN_LOG_LEVEL` are also forwarded. The host port
 put a TLS reverse proxy in front for remote access. The script validates the
 configuration before starting the service and never replaces an existing
 container automatically.
+
+Both optional total-budget variables are exported and forwarded identically to the
+configuration preflight and runtime containers. Empty or unset values leave the
+corresponding total disabled in both containers.
 
 When overriding `MARABRAIN_ALLOWED_HOSTS`, retain `127.0.0.1` alongside your
 public hostname so the container's internal healthcheck remains authorized.
