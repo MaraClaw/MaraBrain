@@ -10,19 +10,26 @@ import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 from fastmcp.exceptions import ToolError
-from pydantic import ValidationError
+from memory_fake import RECEIPT, calls, domain_list
+from pydantic import SecretStr, ValidationError
 from starlette.testclient import TestClient
 
 from marabrain.config import Settings, Transport
+from marabrain.domain_registry import DomainRegistry
 from marabrain.server import create_server
 
 PROBE_NOISE = "probe-noise"
 ENGINE_SCRIPT = f"""#!/bin/sh
 printf '%s\\n' "$*" >> "${{0%/*}}/calls"
+if [ "$*" = "--json domain list" ]; then
+    echo '{{"domains":[]}}'
+    exit 0
+fi
 read -r mode < "${{0%/*}}/mode"
 case "$mode" in
 ok) echo {PROBE_NOISE}; echo {PROBE_NOISE} >&2; exit 0 ;;
 fail) echo {PROBE_NOISE}; echo {PROBE_NOISE} >&2; exit 3 ;;
+delay) /bin/sleep 0.5; exit 0 ;;
 hang) exec /bin/sleep 30 ;;
 esac
 """
@@ -38,6 +45,7 @@ def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     executable.chmod(0o755)
     (bin_dir / "mode").write_text("ok")
     monkeypatch.setenv("PATH", os.pathsep.join([str(bin_dir), os.environ["PATH"]]))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     return bin_dir
 
 
@@ -92,7 +100,7 @@ async def test_mcp_inventory_and_health(engine: Path, capfd: pytest.CaptureFixtu
         assert await client.list_resources() == []
         assert await client.list_prompts() == []
         result = await client.call_tool("health", {})
-        assert result.structured_content == {"status": "ok", "version": "0.1.0"}
+        assert result.structured_content == {"status": "ok", "version": "0.2.0"}
     assert probe_calls(engine) == ["ctl status"]
     assert PROBE_NOISE not in "".join(capfd.readouterr())
 
@@ -121,8 +129,8 @@ async def test_module_stdio_entrypoint(engine: Path) -> None:
     transport = StdioTransport(command=sys.executable, args=["-m", "marabrain"])
     async with Client(transport, timeout=10) as client:
         result = await client.call_tool("health", {})
-        assert result.structured_content == {"status": "ok", "version": "0.1.0"}
-    assert probe_calls(engine) == ["ctl status"]
+        assert result.structured_content == {"status": "ok", "version": "0.2.0"}
+    assert probe_calls(engine) == ["--json domain list", "ctl status"]
 
 
 def test_http_auth_and_host_origin_protection(engine: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -144,4 +152,66 @@ def test_http_auth_and_host_origin_protection(engine: Path, monkeypatch: pytest.
         assert client.post("/mcp", headers={**auth, "origin": "https://evil.example"}, json=payload).status_code == 403
         response = client.post("/mcp", headers=auth, json=payload)
         assert response.status_code == 200
-        assert response.json()["result"]["structuredContent"] == {"status": "ok", "version": "0.1.0"}
+        assert response.json()["result"]["structuredContent"] == {"status": "ok", "version": "0.2.0"}
+
+
+@pytest.mark.asyncio
+async def test_health_deadlines_are_independent_server_snapshots(engine: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify concurrent servers retain their health budgets after the environment changes."""
+    (engine / "mode").write_text("delay")
+    short = create_server(Settings(health_timeout_seconds=0.2))
+    long = create_server(Settings(health_timeout_seconds=2.0))
+    monkeypatch.setenv("MARABRAIN_HEALTH_TIMEOUT_SECONDS", "0.001")
+    async with Client(short) as short_client, Client(long) as long_client:
+
+        async def times_out() -> None:
+            """Verify the shorter captured budget rejects the delayed probe."""
+            with pytest.raises(ToolError, match="Crystalline daemon is not responding"):
+                await short_client.call_tool("health", {})
+
+        async def succeeds() -> None:
+            """Verify the longer captured budget allows the same delayed probe."""
+            result = await long_client.call_tool("health", {})
+            assert result.structured_content == {"status": "ok", "version": "0.2.0"}
+
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(times_out)
+            tasks.start_soon(succeeds)
+    assert probe_calls(engine) == ["ctl status", "ctl status"]
+
+
+@pytest.mark.asyncio
+async def test_domain_policies_are_independent_server_snapshots(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify servers retain exact domain admission after later environment changes."""
+    domain_list(cli, ["Notes"])
+    await DomainRegistry.from_environment(30).synchronize()
+    (cli / "calls.jsonl").unlink()
+    allowed = create_server(Settings(allowed_domains=("Notes",)))
+    denied = create_server(Settings(allowed_domains=()))
+    monkeypatch.setenv("MARABRAIN_ALLOWED_DOMAINS", '["other"]')
+    async with Client(allowed) as allowed_client, Client(denied) as denied_client:
+        result = await allowed_client.call_tool("read_memory", {"domain": "Notes", "permalink": "plan"})
+        assert result.structured_content == RECEIPT
+        for client, domain in ((allowed_client, "notes"), (denied_client, "Notes")):
+            with pytest.raises(ToolError):
+                await client.call_tool("read_memory", {"domain": domain, "permalink": "plan"})
+    assert len(calls(cli)) == 1
+
+
+def test_http_domain_policy_denies_before_command(cli: Path) -> None:
+    """Verify authenticated HTTP enforces the captured domain policy before CLI execution."""
+    settings = Settings(transport=Transport.HTTP, bearer_secret=SecretStr("s" * 32), allowed_domains=("notes",))
+    app = create_server(settings).http_app(
+        stateless_http=True, json_response=True, host_origin_protection=True, allowed_hosts=settings.allowed_hosts, allowed_origins=settings.allowed_origins
+    )
+    headers = {"host": "localhost", "accept": "application/json, text/event-stream", "authorization": "Bearer " + "s" * 32}
+    arguments = {"domain": "other", "permalink": "plan"}
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "read_memory", "arguments": arguments}}
+    with TestClient(app) as client:
+        denied = client.post("/mcp", headers=headers, json=payload)
+        assert denied.status_code == 200 and denied.json()["result"]["isError"] is True
+        assert calls(cli) == []
+        arguments["domain"] = "notes"
+        allowed = client.post("/mcp", headers=headers, json=payload)
+        assert allowed.json()["result"]["structuredContent"] == RECEIPT
+    assert len(calls(cli)) == 1

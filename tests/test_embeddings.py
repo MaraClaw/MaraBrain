@@ -14,13 +14,14 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import AnyHttpUrl
 
-from marabrain.embeddings import main
+from marabrain.embeddings import EmbeddingSettings, EmbeddingsError, initialize_embeddings, main
 
 SECRET = "sk-test-secret-value"
 LEAK = "LEAKED-RESPONSE-BODY"
 EXISTING_CONFIG = "service:\n  http: false\ndomains:\n  - name: notes\ngithub:\n  token_env: GITHUB_TOKEN\n"
-EMBEDDING_VARIABLES = ("EMBEDDING_MODEL", "EMBEDDING_PROVIDER_URL", "EMBEDDING_DIMS", "EMBEDDING_API_KEY")
+EMBEDDING_VARIABLES = ("EMBEDDING_MODEL", "EMBEDDING_PROVIDER_URL", "EMBEDDING_DIMS", "EMBEDDING_API_KEY", "EMBEDDING_API_KEY_FILE")
 
 
 @dataclass(slots=True)
@@ -235,7 +236,7 @@ def test_invalid_environment_exits_nonzero_before_any_request(
     """Verify partial or malformed variables fail naming the variable, send nothing, write nothing, and echo no input values."""
     configure(monkeypatch, provider)
     for name in EMBEDDING_VARIABLES:
-        monkeypatch.delenv(name)
+        monkeypatch.delenv(name, raising=False)
     for name, value in variables.items():
         monkeypatch.setenv(name, value)
     assert main() == 1
@@ -275,3 +276,38 @@ def test_module_entry_point_exit_codes(provider: Provider, config_path: Path, mo
     failed = subprocess.run(command, env=dict(os.environ), capture_output=True, text=True, timeout=30, check=False)
     assert failed.returncode == 1
     assert SECRET not in failed.stderr
+
+
+def test_file_key_authenticates_and_reloads_for_daemon(provider: Provider, config_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify file-backed keys authenticate, reach the daemon overlay, and reload without persistence."""
+    path = tmp_path / "api-key"
+    path.write_text("first-key\n")
+    configure(monkeypatch, provider, EMBEDDING_API_KEY="", EMBEDDING_API_KEY_FILE=str(path))
+    first = initialize_embeddings()
+    path.write_text("second-key\r\n")
+    second = initialize_embeddings()
+    assert first == {"EMBEDDING_API_KEY": "first-key"}
+    assert second == {"EMBEDDING_API_KEY": "second-key"}
+    assert [request.authorization for request in provider.requests] == ["Bearer first-key", "Bearer second-key"]
+    assert "first-key" not in config_path.read_text() and "second-key" not in config_path.read_text()
+
+
+def test_direct_embedding_settings_resolves_key_file(tmp_path: Path) -> None:
+    """Verify direct embedding model construction resolves the mounted key."""
+    path = tmp_path / "api-key"
+    path.write_text("direct-key\n")
+    settings = EmbeddingSettings(model="m", provider_url=AnyHttpUrl("http://localhost"), dims=3, api_key_file=path)
+    assert settings.api_key is not None and settings.api_key.get_secret_value() == "direct-key"
+
+
+def test_file_conflict_preserves_existing_configuration(provider: Provider, config_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify conflicting credential sources fail before probing or replacing YAML."""
+    path = tmp_path / "api-key"
+    path.write_text("file-key")
+    write_config(config_path, EXISTING_CONFIG)
+    configure(monkeypatch, provider, EMBEDDING_API_KEY_FILE=str(path))
+    with pytest.raises(EmbeddingsError) as error:
+        initialize_embeddings()
+    assert SECRET not in str(error.value) and "file-key" not in str(error.value)
+    assert provider.requests == []
+    assert config_path.read_text() == EXISTING_CONFIG

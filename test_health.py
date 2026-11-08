@@ -19,6 +19,9 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from mcp import MCPError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic_core import PydanticCustomError
+
+from marabrain.credentials import resolve_secret
 
 
 class HealthResult(BaseModel):
@@ -33,12 +36,12 @@ class HealthResult(BaseModel):
 async def main() -> None:
     """Call the local HTTP health tool and print its validated response."""
     load_dotenv(Path(__file__).with_name(".env"))
-    secret = os.environ.get("MARABRAIN_BEARER_SECRET")
-    if not secret:
-        raise SystemExit("Set MARABRAIN_BEARER_SECRET in .env or the environment.")
+    secret = resolve_secret(os.environ.get("MARABRAIN_BEARER_SECRET"), os.environ.get("MARABRAIN_BEARER_SECRET_FILE"))
+    if secret is None:
+        raise SystemExit("Set MARABRAIN_BEARER_SECRET or MARABRAIN_BEARER_SECRET_FILE in .env or the environment.")
     port = os.environ.get("MARABRAIN_HOST_PORT", os.environ.get("MARABRAIN_PORT", "9110"))
     url = f"http://127.0.0.1:{port}/mcp"
-    async with Client(url, auth=secret, timeout=10) as client:
+    async with Client(url, auth=secret.get_secret_value(), timeout=10) as client:
         result = await client.call_tool("health", {})
         health = HealthResult.model_validate(result.structured_content)
     print(f"PASS {url}")
@@ -48,5 +51,5 @@ async def main() -> None:
 if __name__ == "__main__":
     try:
         anyio.run(main)
-    except (MCPError, RuntimeError, TimeoutError, ToolError, ValidationError) as error:
+    except (MCPError, RuntimeError, TimeoutError, ToolError, ValidationError, PydanticCustomError) as error:
         raise SystemExit(f"Health check failed: {error}") from None

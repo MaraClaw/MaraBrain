@@ -6,13 +6,14 @@ from pathlib import Path
 
 import anyio
 import pytest
-from fastmcp import Client
+from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from memory_fake import NOISE, RECEIPT, call, calls, respond
 from starlette.testclient import TestClient
 
 from marabrain import crystalline
 from marabrain.config import Settings
+from marabrain.memory_tools import register_memory_tools
 from marabrain.server import create_server
 
 
@@ -163,6 +164,7 @@ async def test_cli_failures_yield_fixed_errors_and_no_retry(cli: Path, capfd: py
 
 async def test_missing_executable_yields_unavailable_error(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify that an absent or unexecutable crystalline yields a fixed error."""
+    monkeypatch.setenv("PATH", str(cli))
     (cli / "crystalline").chmod(stat.S_IRUSR | stat.S_IWUSR)
     with pytest.raises(ToolError, match="unavailable"):
         await call("read_memory", TARGET)
@@ -172,17 +174,31 @@ async def test_missing_executable_yields_unavailable_error(cli: Path, monkeypatc
         await call("read_memory", TARGET)
 
 
-async def test_hanging_cli_is_killed_at_the_deadline(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_hanging_cli_is_killed_at_the_deadline(cli: Path) -> None:
     """Verify that a hung command is terminated at the deadline with an error that does not promise rollback."""
-    monkeypatch.setattr(crystalline, "COMMAND_TIMEOUT_SECONDS", 1)
     respond(cli, hang=True)
     with anyio.fail_after(15), pytest.raises(ToolError, match="may or may not have been applied"):
-        await call("delete_memory", TARGET)
+        await crystalline.run_json(["delete", "team/plan", "notes", "--force"], timeout_seconds=1.0)
     (record,) = calls(cli)
     pid = record["pid"]
     assert isinstance(pid, int)
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+@pytest.mark.parametrize(
+    "tool,arguments",
+    [("create_memory", NOTE), ("read_memory", TARGET), ("edit_memory", edit({"type": "append", "content": "x"})), ("delete_memory", TARGET)],
+)
+@pytest.mark.parametrize("policy", [frozenset[str](), frozenset({"Notes"})])
+async def test_denied_domains_never_execute(cli: Path, tool: str, arguments: dict[str, object], policy: frozenset[str]) -> None:
+    """Reject every single-domain operation before execution under an exact allowlist."""
+    server = FastMCP("test")
+    register_memory_tools(server, policy)
+    async with Client(server) as client:
+        with pytest.raises(ToolError, match="not permitted"):
+            await client.call_tool(tool, arguments)
+    assert calls(cli) == []
 
 
 @pytest.mark.parametrize(

@@ -1,9 +1,10 @@
 """Validated input contracts for the Crystalline-backed memory tools."""
 
+import json
 import re
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -44,6 +45,15 @@ def _tag(value: str) -> str:
     return value
 
 
+def _metadata(value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Require finite JSON numbers and valid Unicode before executing the CLI."""
+    try:
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (ValueError, UnicodeEncodeError) as error:
+        raise ValueError("metadata must contain valid JSON and Unicode") from error
+    return value
+
+
 Domain = Annotated[str, Field(min_length=1, max_length=128, description="Registered domain name."), AfterValidator(_positional)]
 Permalink = Annotated[str, Field(min_length=1, max_length=512, description="Domain-relative permalink, as returned by search."), AfterValidator(_relative_path)]
 Title = Annotated[str, Field(min_length=1, max_length=256, description="Memory title."), AfterValidator(_positional)]
@@ -52,6 +62,7 @@ Tag = Annotated[str, Field(min_length=1, max_length=64, description="Tag without
 Tags = Annotated[list[Tag], Field(max_length=32)]
 Domains = Annotated[list[Domain], Field(min_length=1, description="Domains to search; at least one.")]
 Content = Annotated[str, AfterValidator(_text)]
+Metadata = Annotated[dict[str, JsonValue], Field(description="JSON object with additional memory metadata."), AfterValidator(_metadata)]
 Section = Annotated[str, Field(min_length=1, max_length=512, description="Heading path of the target section."), AfterValidator(_single_line)]
 Checksum = Annotated[str, Field(pattern=r"^[\x21-\x7e]{1,128}$", description="Checksum from a previous read.")]
 Query = Annotated[str, Field(min_length=1, max_length=1024, description="Search text."), AfterValidator(_positional)]

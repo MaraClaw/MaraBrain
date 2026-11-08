@@ -1,10 +1,12 @@
 """Pytest fixtures shared by the memory tool tests."""
 
-import os
 from pathlib import Path
 
 import pytest
-from memory_fake import FAKE_CLI, respond
+import anyio
+from memory_fake import FAKE_CLI, domain_list, respond
+
+from marabrain.domain_registry import DomainRegistry
 
 
 @pytest.fixture
@@ -16,5 +18,10 @@ def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     executable.write_text(FAKE_CLI)
     executable.chmod(0o755)
     respond(bin_dir)
-    monkeypatch.setenv("PATH", os.pathsep.join([str(bin_dir), os.environ["PATH"]]))
+    domain_list(bin_dir, ["notes"])
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    anyio.run(DomainRegistry.from_environment(30).synchronize)
+    (bin_dir / "calls.jsonl").unlink()
     return bin_dir
