@@ -100,7 +100,7 @@ async def test_mcp_inventory_and_health(engine: Path, capfd: pytest.CaptureFixtu
         assert await client.list_resources() == []
         assert await client.list_prompts() == []
         result = await client.call_tool("health", {})
-        assert result.structured_content == {"status": "ok", "version": "0.4.0"}
+        assert result.structured_content == {"status": "ok", "version": "0.4.1"}
     assert probe_calls(engine) == ["ctl status"]
     assert PROBE_NOISE not in "".join(capfd.readouterr())
 
@@ -129,7 +129,7 @@ async def test_module_stdio_entrypoint(engine: Path) -> None:
     transport = StdioTransport(command=sys.executable, args=["-m", "marabrain"], env=dict(os.environ))
     async with Client(transport, timeout=10) as client:
         result = await client.call_tool("health", {})
-        assert result.structured_content == {"status": "ok", "version": "0.4.0"}
+        assert result.structured_content == {"status": "ok", "version": "0.4.1"}
     assert probe_calls(engine) == ["--json domain list", "ctl status"]
 
 
@@ -152,7 +152,7 @@ def test_http_auth_and_host_origin_protection(engine: Path, monkeypatch: pytest.
         assert client.post("/mcp", headers={**auth, "origin": "https://evil.example"}, json=payload).status_code == 403
         response = client.post("/mcp", headers=auth, json=payload)
         assert response.status_code == 200
-        assert response.json()["result"]["structuredContent"] == {"status": "ok", "version": "0.4.0"}
+        assert response.json()["result"]["structuredContent"] == {"status": "ok", "version": "0.4.1"}
 
 
 @pytest.mark.asyncio
@@ -172,7 +172,7 @@ async def test_health_deadlines_are_independent_server_snapshots(engine: Path, m
         async def succeeds() -> None:
             """Verify the longer captured budget allows the same delayed probe."""
             result = await long_client.call_tool("health", {})
-            assert result.structured_content == {"status": "ok", "version": "0.4.0"}
+            assert result.structured_content == {"status": "ok", "version": "0.4.1"}
 
         async with anyio.create_task_group() as tasks:
             tasks.start_soon(times_out)

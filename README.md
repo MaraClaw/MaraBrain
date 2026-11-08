@@ -3,7 +3,7 @@
 🦞 Second Brain For OpenClaw-backed Agents.
 
 Python MCP server named `marabrain-mcp`, built with FastMCP. The interface contains
-six tools and no resources or prompts. `health` returns `{"status": "ok", "version": "0.4.0"}`
+six tools and no resources or prompts. `health` returns `{"status": "ok", "version": "0.4.1"}`
 only after the [Crystalline](https://github.com/jordiboehme/crystalline) background engine
 answers `crystalline ctl status`. Missing executables, failed probes, and probes taking
 longer than the configured health deadline produce an MCP tool error instead of a successful response.
