@@ -8,12 +8,6 @@ if [ -f "$script_dir/.env" ]; then
     set +a
 fi
 
-: "${MARABRAIN_BEARER_SECRET:?MARABRAIN_BEARER_SECRET is required}"
-if [ "${#MARABRAIN_BEARER_SECRET}" -lt 32 ]; then
-    printf '%s\n' 'MARABRAIN_BEARER_SECRET must contain at least 32 characters' >&2
-    exit 1
-fi
-
 MARABRAIN_IMAGE=${MARABRAIN_IMAGE:-marabrain:latest}
 MARABRAIN_CONTAINER=${MARABRAIN_CONTAINER:-marabrain}
 MARABRAIN_HOST_PORT=${MARABRAIN_HOST_PORT:-9110}
@@ -33,17 +27,51 @@ esac
 export MARABRAIN_BEARER_SECRET MARABRAIN_ALLOWED_HOSTS MARABRAIN_ALLOWED_ORIGINS
 export EMBEDDING_MODEL EMBEDDING_DIMS EMBEDDING_PROVIDER_URL EMBEDDING_API_KEY
 
+set --
+if [ -n "${MARABRAIN_BEARER_SECRET_FILE:-}" ]; then
+    case $MARABRAIN_BEARER_SECRET_FILE in
+        /*) ;; *) printf '%s\n' 'MARABRAIN_BEARER_SECRET_FILE must be an absolute path' >&2; exit 1 ;;
+    esac
+    case $MARABRAIN_BEARER_SECRET_FILE in
+        *,*) printf '%s\n' 'Secret file paths cannot contain commas' >&2; exit 1 ;;
+    esac
+    if [ ! -f "$MARABRAIN_BEARER_SECRET_FILE" ] || [ ! -r "$MARABRAIN_BEARER_SECRET_FILE" ]; then
+        printf '%s\n' 'Credential file must be a readable regular file' >&2; exit 1
+    fi
+    set -- "$@" --mount "type=bind,source=$MARABRAIN_BEARER_SECRET_FILE,target=/run/secrets/marabrain_bearer,readonly" \
+        --env MARABRAIN_BEARER_SECRET_FILE=/run/secrets/marabrain_bearer
+fi
+if [ -n "${EMBEDDING_API_KEY_FILE:-}" ]; then
+    case $EMBEDDING_API_KEY_FILE in
+        /*) ;; *) printf '%s\n' 'EMBEDDING_API_KEY_FILE must be an absolute path' >&2; exit 1 ;;
+    esac
+    case $EMBEDDING_API_KEY_FILE in
+        *,*) printf '%s\n' 'Secret file paths cannot contain commas' >&2; exit 1 ;;
+    esac
+    if [ ! -f "$EMBEDDING_API_KEY_FILE" ] || [ ! -r "$EMBEDDING_API_KEY_FILE" ]; then
+        printf '%s\n' 'Credential file must be a readable regular file' >&2; exit 1
+    fi
+    set -- "$@" --mount "type=bind,source=$EMBEDDING_API_KEY_FILE,target=/run/secrets/embedding_api_key,readonly" \
+        --env EMBEDDING_API_KEY_FILE=/run/secrets/embedding_api_key
+fi
+
 docker build --tag "$MARABRAIN_IMAGE" "$script_dir"
 docker run --rm --init --read-only --tmpfs /tmp --cap-drop ALL \
     --security-opt no-new-privileges \
+    "$@" \
     --env MARABRAIN_TRANSPORT=http \
     --env MARABRAIN_BEARER_SECRET --env MARABRAIN_ALLOWED_HOSTS --env MARABRAIN_ALLOWED_ORIGINS \
-    "$MARABRAIN_IMAGE" python -c 'from marabrain.config import Settings; Settings()'
+    --env MARABRAIN_ALLOWED_DOMAINS --env MARABRAIN_HEALTH_TIMEOUT_SECONDS --env MARABRAIN_COMMAND_TIMEOUT_SECONDS \
+    --env MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS --env MARABRAIN_LOG_LEVEL --env EMBEDDING_API_KEY \
+    "$MARABRAIN_IMAGE" python -c 'import os; from marabrain.config import Settings; from marabrain.credentials import resolve_secret; Settings(); resolve_secret(os.environ.get("EMBEDDING_API_KEY"), os.environ.get("EMBEDDING_API_KEY_FILE"))'
 exec docker run --name "$MARABRAIN_CONTAINER" --init --read-only --tmpfs /tmp \
     --cap-drop ALL --security-opt no-new-privileges --stop-timeout 10 \
+    "$@" \
     --mount "type=volume,source=$MARABRAIN_DATA_VOLUME,target=/data" \
     --publish "127.0.0.1:$MARABRAIN_HOST_PORT:9110" \
     --env MARABRAIN_TRANSPORT=http \
     --env MARABRAIN_BEARER_SECRET --env MARABRAIN_ALLOWED_HOSTS --env MARABRAIN_ALLOWED_ORIGINS \
+    --env MARABRAIN_ALLOWED_DOMAINS --env MARABRAIN_HEALTH_TIMEOUT_SECONDS --env MARABRAIN_COMMAND_TIMEOUT_SECONDS \
+    --env MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS --env MARABRAIN_LOG_LEVEL \
     --env EMBEDDING_MODEL --env EMBEDDING_DIMS --env EMBEDDING_PROVIDER_URL --env EMBEDDING_API_KEY \
     "$MARABRAIN_IMAGE"
