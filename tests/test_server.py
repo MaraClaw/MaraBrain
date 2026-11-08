@@ -126,7 +126,7 @@ async def test_health_fails_without_a_responsive_engine(engine: Path, monkeypatc
 @pytest.mark.asyncio
 async def test_module_stdio_entrypoint(engine: Path) -> None:
     """Verify that the module entry point serves health requests over stdio."""
-    transport = StdioTransport(command=sys.executable, args=["-m", "marabrain"])
+    transport = StdioTransport(command=sys.executable, args=["-m", "marabrain"], env=dict(os.environ))
     async with Client(transport, timeout=10) as client:
         result = await client.call_tool("health", {})
         assert result.structured_content == {"status": "ok", "version": "0.3.0"}

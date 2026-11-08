@@ -20,7 +20,8 @@ from pydantic import BaseModel, ConfigDict, SecretStr
 from marabrain import __version__
 from marabrain.config import Settings, Transport
 from marabrain.domain_registry import DomainRegistry
-from marabrain.lifecycle import application_signals, engine_lifecycle, probe_engine
+from marabrain.engine_context import EngineContext
+from marabrain.lifecycle import application_signals, engine_lifecycle, probe_engine, startup_remaining
 from marabrain.lifecycle_stdio import BufferedInput, CancellableInput
 from marabrain.memory_tools import register_memory_tools
 
@@ -49,8 +50,9 @@ class BearerVerifier(TokenVerifier):
         return None
 
 
-def create_server(settings: Settings) -> FastMCP:
+def create_server(settings: Settings, *, context: EngineContext | None = None) -> FastMCP:
     """Construct the MCP server with its health and memory tools and configured authentication."""
+    bound_context = context if context is not None else EngineContext.capture()
     auth = BearerVerifier(settings.bearer_secret) if settings.transport == Transport.HTTP and settings.bearer_secret is not None else None
     server = FastMCP("marabrain-mcp", version=__version__, auth=auth, mask_error_details=True, strict_input_validation=True, tasks=False)
     health_timeout = settings.health_timeout_seconds
@@ -59,11 +61,18 @@ def create_server(settings: Settings) -> FastMCP:
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True})
     async def health() -> HealthResponse:
         """Report the application version once the daemon answers within the configured health deadline."""
-        if not await probe_engine(health_timeout):
+        if not await probe_engine(health_timeout, context=bound_context):
             raise ToolError("Crystalline daemon is not responding.")
         return HealthResponse()
 
-    register_memory_tools(server, allowed_domains=policy, command_timeout_seconds=settings.command_timeout_seconds, llm_settings=settings.llm)
+    register_memory_tools(
+        server,
+        allowed_domains=policy,
+        command_timeout_seconds=settings.command_timeout_seconds,
+        llm_settings=settings.llm,
+        context=bound_context,
+        operation_timeout_seconds=settings.operation_timeout_seconds,
+    )
     return server
 
 
@@ -76,9 +85,9 @@ class ApplicationHTTPServer(uvicorn.Server):
         yield
 
 
-async def run_transport(settings: Settings, stdin: anyio.AsyncFile[str] | None = None) -> None:
+async def run_transport(settings: Settings, stdin: anyio.AsyncFile[str] | None = None, *, context: EngineContext | None = None) -> None:
     """Serve MCP over the selected transport until EOF, failure, or cancellation."""
-    server = create_server(settings)
+    server = create_server(settings, context=context)
     transport = settings.transport
     match transport:
         case Transport.STDIO:
@@ -123,6 +132,8 @@ async def run_transport(settings: Settings, stdin: anyio.AsyncFile[str] | None =
 
 async def run_application(settings: Settings) -> None:
     """Apply one signal and engine lifecycle to either configured transport."""
+    deadline = None if settings.startup_timeout_seconds is None else anyio.current_time() + settings.startup_timeout_seconds
+    context = EngineContext.capture()
     async with application_signals(), anyio.create_task_group() as tasks:
         stdin: anyio.AsyncFile[str] | None = None
         starting = True
@@ -147,10 +158,12 @@ async def run_application(settings: Settings) -> None:
             case Transport.HTTP:
                 receive = None
         try:
-            async with engine_lifecycle(settings):
-                await DomainRegistry.from_environment(settings.command_timeout_seconds).synchronize()
+            async with engine_lifecycle(settings, context=context, deadline=deadline):
+                with anyio.fail_after(startup_remaining(deadline)):
+                    await DomainRegistry.from_environment(settings.command_timeout_seconds, context=context).synchronize(deadline=deadline)
+                    startup_remaining(deadline)
                 starting = False
-                await run_transport(settings, stdin)
+                await run_transport(settings, stdin, context=context)
         finally:
             tasks.cancel_scope.cancel()
             if receive is not None:

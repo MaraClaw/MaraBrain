@@ -94,10 +94,10 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 
 
 @asynccontextmanager
-async def application(root: Path) -> AsyncGenerator[Process]:
+async def application(root: Path, *, command: list[str] | None = None) -> AsyncGenerator[Process]:
     """Run the shipped module with captured protocol output and a diagnostic artifact."""
     with (root / "application-stderr").open("ab") as errors:
-        async with await anyio.open_process([sys.executable, "-m", "marabrain"], stderr=errors, start_new_session=True) as process:
+        async with await anyio.open_process(command or [sys.executable, "-m", "marabrain"], stderr=errors, start_new_session=True) as process:
             try:
                 yield process
             finally:
