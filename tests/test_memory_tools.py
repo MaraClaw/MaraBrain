@@ -186,6 +186,25 @@ async def test_hanging_cli_is_killed_at_the_deadline(cli: Path) -> None:
         os.kill(pid, 0)
 
 
+async def test_programmatic_server_capture_limits_are_independent_and_health_is_masked(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep standalone servers on their programmatic limits despite later environment changes."""
+    small = create_server(Settings(max_transient_processes=2, max_capture_bytes=8))
+    large = create_server(Settings(max_transient_processes=3, max_capture_bytes=4096))
+    monkeypatch.setenv("MARABRAIN_MAX_CAPTURE_BYTES", "1")
+    monkeypatch.setenv("MARABRAIN_MAX_TRANSIENT_PROCESSES", "2")
+    monkeypatch.setenv("PATH", str(cli / "absent"))
+    respond(cli, stdout='{"private":"secret-payload"}')
+    async with Client(small) as first, Client(large) as second:
+        with pytest.raises(ToolError, match="capture limit"):
+            await first.call_tool("delete_memory", TARGET)
+        assert (await second.call_tool("read_memory", TARGET)).structured_content == {"private": "secret-payload"}
+        with pytest.raises(ToolError, match="daemon is not responding") as error:
+            await first.call_tool("health", {})
+        assert "capture limit" not in str(error.value) and "secret-payload" not in str(error.value)
+        respond(cli, stdout="{}")
+        assert (await first.call_tool("read_memory", TARGET)).structured_content == {}
+
+
 @pytest.mark.parametrize(
     "tool,arguments",
     [("create_memory", NOTE), ("read_memory", TARGET), ("edit_memory", edit({"type": "append", "content": "x"})), ("delete_memory", TARGET)],
