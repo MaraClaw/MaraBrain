@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from marabrain.config import Settings
+
 ROOT = Path(__file__).resolve().parents[1]
 SECRET = "secret-value-not-for-argv-" * 2
 
@@ -60,6 +62,8 @@ def test_launcher_forwards_controls_and_mounts_in_both_containers(launcher: Path
     assert result.returncode == 0, result.stderr
     calls = [json.loads(line) for line in (launcher / "calls").read_text().splitlines()]
     assert len(calls) == 3
+    assert "--rm" in calls[2]["args"]
+    assert "type=volume,source=marabrain-data,target=/data" in calls[2]["args"]
     for call in calls[1:]:
         args = call["args"]
         assert f"type=bind,source={bearer},target=/run/secrets/marabrain_bearer,readonly" in args
@@ -94,6 +98,34 @@ def test_launcher_rejects_missing_credential_before_docker(launcher: Path) -> No
     result = subprocess.run([str(launcher / "start-from-docker.sh")], env=environment, capture_output=True, text=True, timeout=20, check=False)
     assert result.returncode != 0
     assert not (launcher / "calls").exists()
+
+
+@pytest.mark.parametrize(
+    ("startup", "operation", "expected"),
+    [(None, None, (None, None)), ("", "", (None, None)), ("1.25", "", (1.25, None)), ("", "8.5", (None, 8.5)), ("1.25", "8.5", (1.25, 8.5))],
+)
+def test_launcher_forwards_optional_budgets_for_settings(
+    launcher: Path, monkeypatch: pytest.MonkeyPatch, startup: str | None, operation: str | None, expected: tuple[float | None, float | None]
+) -> None:
+    """Parse actual preflight and runtime forwarding from unset, blank, or configured shell values."""
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
+    environment.update(PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}", DOCKER_LOG=str(launcher / "calls"))
+    budgets = {"MARABRAIN_STARTUP_TIMEOUT_SECONDS": startup, "MARABRAIN_OPERATION_TIMEOUT_SECONDS": operation}
+    (launcher / ".env").write_text("".join(f"{name}={value}\n" for name, value in budgets.items() if value is not None))
+    result = subprocess.run([str(launcher / "start-from-docker.sh")], env=environment, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in (launcher / "calls").read_text().splitlines()]
+    assert len(calls) == 3
+    for call in calls[1:]:
+        with monkeypatch.context() as container:
+            for name, value in budgets.items():
+                container.delenv(name, raising=False)
+                assert any(call["args"][index : index + 2] == ["--env", name] for index in range(len(call["args"]) - 1))
+                assert call["env"].get(name) == value
+                if name in call["env"]:
+                    container.setenv(name, call["env"][name])
+            settings = Settings()
+            assert (settings.startup_timeout_seconds, settings.operation_timeout_seconds) == expected
 
 
 @pytest.mark.parametrize("default", [True, False])

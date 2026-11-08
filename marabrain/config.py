@@ -43,9 +43,17 @@ class Settings(BaseSettings):
     allowed_domains: tuple[Domain, ...] | None = None
     health_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 2.0
     command_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 30.0
+    startup_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
+    operation_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
     engine_mode: EngineMode = EngineMode.EXTERNAL
     engine_startup_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 30.0
     llm: LLMSettings = Field(default_factory=LLMSettings)
+
+    @field_validator("startup_timeout_seconds", "operation_timeout_seconds", mode="before")
+    @classmethod
+    def empty_total_budget(cls, value: float | str | None) -> float | str | None:
+        """Treat empty optional total budgets as disabled without accepting zero."""
+        return None if value == "" else value
 
     @field_validator("bearer_secret_file", mode="before")
     @classmethod

@@ -1,6 +1,6 @@
 [project]
 name = "marabrain"
-version = "0.3.0"
+version = "0.4.0"
 description = "MaraBrain is a MCP server for AI agent knowledge base. Plain markdown underneath."
 readme = "README.md"
 license = { text = "MIT" }

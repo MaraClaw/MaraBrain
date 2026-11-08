@@ -8,7 +8,7 @@ ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=0
 COPY pyproject.toml uv.lock README.md ./
 COPY marabrain ./marabrain
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
+    uv sync --frozen --no-dev --no-editable --reinstall-package marabrain
 
 FROM python:3.15.2-slim AS runtime
 ENV PATH="/app/.venv/bin:$PATH" \

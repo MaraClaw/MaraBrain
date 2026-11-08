@@ -2,12 +2,17 @@
 
 import logging
 import subprocess
+import threading
 import time
 from collections.abc import Sequence
+from concurrent.futures import Future
 
 import anyio
 from fastmcp.exceptions import ToolError
 from pydantic import JsonValue, TypeAdapter, ValidationError
+
+from marabrain.deadlines import check_deadline
+from marabrain.engine_context import EngineContext
 
 JsonObject = dict[str, JsonValue]
 _OUTPUT = TypeAdapter(JsonObject)
@@ -15,7 +20,59 @@ _LOGGER = logging.getLogger(__name__)
 _OPERATIONS = frozenset({"write", "read", "edit", "delete", "search"})
 
 
-async def run_json(arguments: Sequence[str], content: str | None = None, timeout_seconds: float = 30.0) -> JsonObject:
+async def _run_command(arguments: Sequence[str], data: bytes, context: EngineContext, deadline: float) -> subprocess.CompletedProcess[bytes]:
+    """Retain ownership through launch cancellation and reap the CLI before returning."""
+    result = Future[subprocess.CompletedProcess[bytes]]()
+    cancelled = threading.Event()
+    finished = anyio.Event()
+    token = anyio.lowlevel.current_token()
+    process: subprocess.Popen[bytes] | None = None
+
+    def execute() -> None:
+        """Own process creation and communication until the child has been reaped."""
+        nonlocal process
+        try:
+            anyio.from_thread.run_sync(check_deadline, deadline, token=token)
+            if cancelled.is_set():
+                result.cancel()
+                return
+            with subprocess.Popen(
+                ["crystalline", "--json", *arguments],
+                stdin=subprocess.PIPE if data else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=context.environment,
+            ) as child:
+                process = child
+                if cancelled.is_set():
+                    child.kill()
+                output, _ = child.communicate(data or None)
+                result.set_result(subprocess.CompletedProcess(child.args, child.returncode, output))
+        except BaseException as error:
+            # Transfer worker failures unchanged to the async boundary.
+            result.set_exception(error)
+        finally:
+            anyio.from_thread.run_sync(finished.set, token=token)
+
+    worker = threading.Thread(target=execute, name="marabrain-cli")
+    worker.start()
+    try:
+        await finished.wait()
+        return result.result()
+    finally:
+        cancelled.set()
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                process.poll()
+        with anyio.CancelScope(shield=True):
+            await anyio.to_thread.run_sync(worker.join)
+
+
+async def run_json(
+    arguments: Sequence[str], content: str | None = None, timeout_seconds: float = 30.0, *, context: EngineContext | None = None, deadline: float | None = None
+) -> JsonObject:
     """Run `crystalline --json` once and return its stdout JSON object unchanged.
 
     Content is sent on stdin, stderr is discarded, and failures raise fixed messages.
@@ -25,15 +82,15 @@ async def run_json(arguments: Sequence[str], content: str | None = None, timeout
     started = time.monotonic()
     _LOGGER.debug("crystalline.start operation=%s", operation)
     data = (content or "").encode()
+    captured = context if context is not None else EngineContext.capture()
     try:
-        with anyio.fail_after(timeout_seconds):
-            result = await anyio.run_process(
-                ["crystalline", "--json", *arguments],
-                input=data or None,
-                stdin=None if data else subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+        check_deadline(deadline)
+        cap = anyio.current_time() + timeout_seconds
+        limit = cap if deadline is None else min(cap, deadline)
+        with anyio.fail_after(limit - anyio.current_time()):
+            check_deadline(limit)
+            result = await _run_command(arguments, data, captured, limit)
+            check_deadline(limit)
     except TimeoutError as error:
         _LOGGER.error("crystalline.failure operation=%s category=timeout elapsed_ms=%.1f", operation, (time.monotonic() - started) * 1000)
         raise ToolError(f"Crystalline did not answer within {timeout_seconds:g} seconds; a mutation may or may not have been applied.") from error

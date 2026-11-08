@@ -3,6 +3,7 @@
 import json
 import socket
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,6 +39,7 @@ class Provider:
 
     url: str = ""
     status: int = 200
+    delay_seconds: float = 0
     body: bytes = field(default_factory=completion)
     requests: list[tuple[str, dict[str, str], JsonObject]] = field(default_factory=list[tuple[str, dict[str, str], JsonObject]])
 
@@ -55,10 +57,14 @@ def provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[Provider]:
             """Capture request data and send the selected reply."""
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             state.requests.append((self.path, dict(self.headers), payload))
+            time.sleep(state.delay_seconds)
             self.send_response(state.status)
             self.send_header("Content-Length", str(len(state.body)))
             self.end_headers()
-            self.wfile.write(state.body)
+            try:
+                self.wfile.write(state.body)
+            except BrokenPipeError, ConnectionResetError:
+                return
 
         def log_message(self, format: str, *args: str) -> None:
             """Suppress local provider logging."""

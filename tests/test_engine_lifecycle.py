@@ -94,10 +94,10 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 
 
 @asynccontextmanager
-async def application(root: Path) -> AsyncGenerator[Process]:
+async def application(root: Path, *, command: list[str] | None = None) -> AsyncGenerator[Process]:
     """Run the shipped module with captured protocol output and a diagnostic artifact."""
     with (root / "application-stderr").open("ab") as errors:
-        async with await anyio.open_process([sys.executable, "-m", "marabrain"], stderr=errors, start_new_session=True) as process:
+        async with await anyio.open_process(command or [sys.executable, "-m", "marabrain"], stderr=errors, start_new_session=True) as process:
             try:
                 yield process
             finally:
@@ -156,7 +156,7 @@ async def health(process: Process) -> None:
         await process.stdin.send(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
         await process.stdin.send(b'{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"health","arguments":{}}}\n')
         result = json.loads(await reader.receive_until(b"\n", 100000))
-    assert result["result"]["structuredContent"] == {"status": "ok", "version": "0.3.0"}
+    assert result["result"]["structuredContent"] == {"status": "ok", "version": "0.4.0"}
 
 
 def assert_reaped(root: Path) -> None:
@@ -403,7 +403,7 @@ async def test_managed_http_shares_readiness_and_cleanup(runtime: Path, monkeypa
         await await_http(runtime)
         async with Client(f"http://127.0.0.1:{unused_tcp_port}/mcp", auth="s" * 32) as client:
             result = await client.call_tool("health", {})
-            assert result.structured_content == {"status": "ok", "version": "0.3.0"}
+            assert result.structured_content == {"status": "ok", "version": "0.4.0"}
         if finish == "term":
             process.send_signal(signal.SIGTERM)
         else:
