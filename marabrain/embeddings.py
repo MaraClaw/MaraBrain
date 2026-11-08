@@ -162,6 +162,10 @@ def initialize_embeddings() -> dict[str, str]:
     settings = load_settings()
     if settings is None:
         return {}
+    if os.environ.get("CRYSTALLINE_CONFIG"):
+        raise EmbeddingsError("remote initialization does not support CRYSTALLINE_CONFIG selection")
+    if any(name.startswith("CRYSTALLINE_EMBEDDINGS_") and value for name, value in os.environ.items()):
+        raise EmbeddingsError("remote initialization does not support CRYSTALLINE_EMBEDDINGS_ overrides")
     probe(settings)
     write_config(settings)
     print(f"marabrain.embeddings: configured remote embeddings (model {settings.model}, {settings.dims} dimensions)", file=sys.stderr)
