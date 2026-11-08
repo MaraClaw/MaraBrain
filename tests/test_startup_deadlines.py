@@ -169,7 +169,7 @@ async def test_completed_startup_serves_beyond_total_deadline(
         else:
             async with Client(f"http://127.0.0.1:{unused_tcp_port}/mcp", auth="s" * 32) as client:
                 result = await client.call_tool("health", {})
-                assert result.structured_content == {"status": "ok", "version": "0.3.0"}
+                assert result.structured_content == {"status": "ok", "version": "0.4.0"}
             process.send_signal(signal.SIGTERM)
         with anyio.fail_after(9):
             assert await process.wait() == 0

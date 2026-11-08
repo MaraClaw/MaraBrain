@@ -72,7 +72,7 @@ with the real task values before execution. In an already installed repository,
 `uv run --no-sync python - <<'PY'` can replace the first line.
 
 ```sh
-uv run --with fastmcp==4.1.6 python - <<'PY'
+uv run --with fastmcp>=4.1.6 python - <<'PY'
 import json
 import logging
 import os
