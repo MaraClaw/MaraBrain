@@ -1,0 +1,76 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - name: Install Python
+        run: uv python install
+      - name: Install dependencies
+        run: uv sync --locked --group dev
+      - name: Ruff lint
+        run: uv run --no-sync ruff check .
+      - name: Ruff format
+        run: uv run --no-sync ruff format --check .
+      - name: Pyright
+        run: uv run --no-sync pyright
+      - name: Ty
+        run: uv run --no-sync ty check
+      - name: Tests with coverage
+        run: |
+          # Fake Crystalline processes contain no application code. Avoid coverage
+          # bootstrap overhead consuming the deadlines these fixtures exercise.
+          uv run --no-sync python - <<'PY'
+          from pathlib import Path
+          import sysconfig
+
+          hook = Path(sysconfig.get_path("purelib")) / "a0_marabrain_coverage.pth"
+          hook.write_text(
+              "import os, sys; "
+              '(os.environ.pop("COVERAGE_PROCESS_CONFIG", None), '
+              'os.environ.pop("COVERAGE_PROCESS_START", None)) '
+              'if os.path.basename(sys.argv[0]) == "crystalline" else None\n',
+              encoding="utf-8",
+          )
+          PY
+          uv run --no-sync pytest --cov=marabrain --cov-report=term-missing --cov-fail-under=90
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - name: Install Python
+        run: uv python install
+      - name: Install dependencies
+        run: uv sync --locked --group dev
+      - name: Install pinned Crystalline
+        run: |
+          image="$(uv run --no-sync python -c 'from pathlib import Path; print(next(line.split()[1] for line in Path("Dockerfile").read_text().splitlines() if line.endswith(" AS crystalline")))')"
+          mkdir -p "$RUNNER_TEMP/marabrain-integration/bin"
+          container="$(docker create "$image")"
+          trap 'docker rm "$container"' EXIT
+          docker cp "$container:/usr/local/bin/crystalline" "$RUNNER_TEMP/marabrain-integration/bin/crystalline"
+          chmod +x "$RUNNER_TEMP/marabrain-integration/bin/crystalline"
+          echo "$RUNNER_TEMP/marabrain-integration/bin" >> "$GITHUB_PATH"
+      - name: Real engine MCP integration
+        run: >-
+          uv run --no-sync pytest tests/integration
+          -o 'addopts=-v --strict-markers --strict-config --tb=short'
+          --basetemp="$RUNNER_TEMP/marabrain-integration/state"
+      - name: Clean integration state and model cache
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/marabrain-integration"

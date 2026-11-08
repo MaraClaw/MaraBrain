@@ -1,6 +1,6 @@
 [project]
 name = "marabrain"
-version = "0.4.0"
+version = "0.4.1"
 description = "MaraBrain is a MCP server for AI agent knowledge base. Plain markdown underneath."
 readme = "README.md"
 license = { text = "MIT" }
@@ -94,6 +94,7 @@ addopts = [
     "--strict-markers",
     "--strict-config",
     "--tb=short",
+    "--ignore=tests/integration",
 ]
 markers = [
     "unit: Unit tests",
@@ -108,6 +109,7 @@ filterwarnings = [
 
 [tool.coverage.run]
 source = ["marabrain"]
+patch = ["subprocess"]
 omit = [
     "*/tests/*",
     "*/test_*.py",

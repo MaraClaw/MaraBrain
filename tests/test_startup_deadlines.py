@@ -6,13 +6,21 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import anyio
 import pytest
 from fastmcp import Client
+from pydantic import SecretStr
 from test_engine_lifecycle import application, assert_reaped, await_file, await_http, health
 from test_engine_lifecycle import runtime as runtime
+
+from marabrain import server
+from marabrain.config import EngineMode, Settings, Transport
+from marabrain.domain_registry import DomainRegistry
+from marabrain.engine_context import EngineContext
 
 BUDGET_ENGINE = '''
 """Expose deterministic startup phase events and retain a foreground daemon."""
@@ -36,7 +44,6 @@ if args == ["ctl", "status"]:
         (root / "preexisting-started").touch()
         if phase == "probe":
             signal.pause()
-        time.sleep(float(os.environ.get("PREEXISTING_DELAY", "0")))
         sys.exit(1)
     (root / "readiness-started").touch()
     if phase == "readiness":
@@ -87,26 +94,48 @@ async def test_total_startup_expiry_stops_each_engine_phase_before_serving(budge
 
 
 @pytest.mark.asyncio
-async def test_total_deadline_is_not_reset_after_a_slow_preexisting_probe(budget_runtime: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.usefixtures("runtime")
+async def test_total_deadline_is_not_reset_after_a_slow_preexisting_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     """Spend the same startup budget on an earlier probe and later synchronization."""
-    monkeypatch.setenv("PREEXISTING_DELAY", "0.7")
-    monkeypatch.setenv("MARABRAIN_HEALTH_TIMEOUT_SECONDS", "2")
-    monkeypatch.setenv("MARABRAIN_STARTUP_TIMEOUT_SECONDS", "1.5")
-    monkeypatch.setenv("BLOCK_PHASE", "sync")
-    async with application(budget_runtime) as process:
-        await await_file(budget_runtime / "sync-started")
-        events = [json.loads(line) for line in (budget_runtime / "events").read_text().splitlines()]
-        sync = next(event for event in events if event["args"] == ["--json", "domain", "list"])
-        with anyio.fail_after(5):
-            while True:
-                try:
-                    os.kill(sync["pid"], 0)
-                except ProcessLookupError:
-                    break
-                await anyio.sleep(0.01)
-            assert time.monotonic() - events[0]["time"] < 1.8
-            assert await process.wait() != 0
-    assert_reaped(budget_runtime)
+    settings = Settings(transport=Transport.HTTP, bearer_secret=SecretStr("s" * 32), engine_mode=EngineMode.MANAGED, startup_timeout_seconds=1.5)
+    started = anyio.current_time()
+    elapsed = 0.0
+    deadlines: list[float | None] = []
+    transport_reached = False
+
+    def current_time() -> float:
+        """Advance startup time only when a preparation phase consumes its budget."""
+        return started + elapsed
+
+    @asynccontextmanager
+    async def prepare_engine(settings: Settings, *, context: EngineContext | None = None, deadline: float | None = None) -> AsyncGenerator[None]:
+        """Consume part of the startup budget before yielding a ready engine."""
+        nonlocal elapsed
+        deadlines.append(deadline)
+        elapsed = 0.7
+        yield
+
+    async def synchronize(registry: DomainRegistry, *, deadline: float | None = None) -> None:
+        """Finish synchronization after the original budget but before a reset budget."""
+        nonlocal elapsed
+        deadlines.append(deadline)
+        elapsed = 1.6
+
+    async def run_transport(settings: Settings, stdin: anyio.AsyncFile[str] | None = None, *, context: EngineContext | None = None) -> None:
+        """Record any attempt to serve after the original startup budget expires."""
+        nonlocal transport_reached
+        transport_reached = True
+
+    monkeypatch.setattr(anyio, "current_time", current_time)
+    monkeypatch.setattr(server, "engine_lifecycle", prepare_engine)
+    monkeypatch.setattr(DomainRegistry, "synchronize", synchronize)
+    monkeypatch.setattr(server, "run_transport", run_transport)
+
+    with pytest.RaisesGroup(TimeoutError, flatten_subgroups=True):
+        await server.run_application(settings)
+
+    assert deadlines == [started + 1.5, started + 1.5]
+    assert not transport_reached
 
 
 @pytest.mark.asyncio
@@ -169,7 +198,7 @@ async def test_completed_startup_serves_beyond_total_deadline(
         else:
             async with Client(f"http://127.0.0.1:{unused_tcp_port}/mcp", auth="s" * 32) as client:
                 result = await client.call_tool("health", {})
-                assert result.structured_content == {"status": "ok", "version": "0.4.0"}
+                assert result.structured_content == {"status": "ok", "version": "0.4.1"}
             process.send_signal(signal.SIGTERM)
         with anyio.fail_after(9):
             assert await process.wait() == 0
