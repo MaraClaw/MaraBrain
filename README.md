@@ -184,6 +184,8 @@ restarting the server.
 | `MARABRAIN_COMMAND_TIMEOUT_SECONDS` | `30` | Positive finite memory command deadline in seconds |
 | `MARABRAIN_STARTUP_TIMEOUT_SECONDS` | unset (disabled) | Optional positive finite total startup preparation budget in seconds; empty also disables it |
 | `MARABRAIN_OPERATION_TIMEOUT_SECONDS` | unset (disabled) | Optional positive finite total budget for each memory operation's Crystalline phase in seconds; empty also disables it |
+| `MARABRAIN_MAX_TRANSIENT_PROCESSES` | unset (disabled) | Optional integer capacity of at least 2 for transient engine commands; empty also disables it |
+| `MARABRAIN_MAX_CAPTURE_BYTES` | unset (disabled) | Optional positive integer ceiling on raw stdout bytes per captured child; empty also disables it |
 | `MARABRAIN_ENGINE_MODE` | `external` | `external` or `managed`; Docker's default command selects `managed` |
 | `MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS` | `30` | Positive finite managed engine readiness budget in seconds after daemon launch |
 
@@ -222,6 +224,24 @@ and memory tools use that snapshot, including HOME/XDG defaults and supported
 existing application. Initializer credential overlays apply only to that application's
 owned daemon. External mode retains its captured CLI environment; a successful health
 probe does not identify the external daemon's configuration.
+
+The two optional resource limits are independent and default to disabled. With
+`MARABRAIN_MAX_TRANSIENT_PROCESSES=C`, each application shares C-1 slots for memory
+and domain-registry commands and one reserved control slot for health, readiness,
+or embedding initialization across startup and serving. Saturated lanes fail
+immediately before launching a child or CLI worker; commands do not queue. Capacity
+remains occupied until the child is reaped and its worker finishes. Separate
+applications have independent capacity; persistent daemons and LLM calls are excluded.
+
+`MARABRAIN_MAX_CAPTURE_BYTES=S` limits raw stdout retained per captured child for
+memory, registry, status and embedding initialization commands. Exactly S bytes can
+succeed only after EOF, successful exit and response validation. The first excess
+byte causes a fixed, redacted failure and owned-child cleanup; truncated JSON is
+never returned and mutations are never retried. Retained raw stdout uses at most
+S bytes plus fixed read overhead; parsed-object memory, daemon diagnostics and LLM
+responses are excluded. Existing deadlines still apply. Leave either limit empty or
+unset to preserve existing behavior; malformed, fractional, zero and negative
+values are rejected, as is capacity below 2.
 
 Environment variables are read at startup. An originless MCP client is accepted;
 browser clients must use an explicitly allowed origin. Avoid wildcard host or
@@ -364,6 +384,11 @@ container automatically.
 Both optional total-budget variables are exported and forwarded identically to the
 configuration preflight and runtime containers. Empty or unset values leave the
 corresponding total disabled in both containers.
+
+`MARABRAIN_MAX_TRANSIENT_PROCESSES` and `MARABRAIN_MAX_CAPTURE_BYTES` are also
+exported and forwarded identically to both containers, including sourced `.env`
+overrides. Both containers parse the same optional integer limits; empty or unset
+values disable them, and invalid values fail configuration preflight.
 
 When overriding `MARABRAIN_ALLOWED_HOSTS`, retain `127.0.0.1` alongside your
 public hostname so the container's internal healthcheck remains authorized.
