@@ -5,7 +5,8 @@ import os
 from pathlib import Path
 
 import pytest
-from fastmcp import Client
+import anyio
+from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from memory_fake import calls, respond
 from pydantic import SecretStr, TypeAdapter
@@ -16,6 +17,9 @@ from marabrain.config import Settings, Transport
 from marabrain.crystalline import JsonObject
 from marabrain.llm_config import LLMProvider
 from marabrain.server import create_server
+from marabrain.llm_config import LLMSettings
+from marabrain.memory_tools import register_memory_tools
+from marabrain.compression import compress_memory
 
 MEMORY: JsonObject = {"domain": "notes", "permalink": "team/plan", "content": "# Retries\nRetry at most twice.\n# Lunch\nPizza.", "checksum": "abc"}
 TARGET = {"domain": "notes", "permalink": "team/plan"}
@@ -124,3 +128,22 @@ def test_http_compressed_read_success_and_provider_failure(cli: Path, provider: 
     else:
         assert result["isError"] is True
         assert str(MEMORY["content"]) not in reply.text and "test-api-key" not in reply.text
+
+
+async def test_compression_keeps_its_own_budget_after_engine_deadline(cli: Path, provider: Provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Complete real provider compression after the memory operation's engine deadline has elapsed."""
+    configure(monkeypatch, provider)
+    respond(cli, json.dumps(MEMORY))
+
+    async def delayed_provider(settings: LLMSettings, query: str, content: str) -> str:
+        """Cross the engine budget boundary before invoking the real loopback provider."""
+        await anyio.sleep(1.1)
+        return await compress_memory(settings, query, content)
+
+    monkeypatch.setattr("marabrain.memory_tools.compress_memory", delayed_provider)
+    server = FastMCP("compressed")
+    register_memory_tools(server, llm_settings=LLMSettings(), operation_timeout_seconds=1)
+    async with Client(server) as client:
+        response = await client.call_tool("read_memory", {**TARGET, "query": "retry", "compress": True})
+    assert response.structured_content == {**MEMORY, "content": "result", "compressed": True}
+    assert len(provider.requests) == 1
