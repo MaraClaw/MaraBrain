@@ -4,9 +4,13 @@ import json
 from typing import assert_never
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
 
+from marabrain.compression import compress_memory
 from marabrain.crystalline import JsonObject, run_json
 from marabrain.domain_registry import DomainRegistry
+from marabrain.llm_config import LLMSettings
 from marabrain.models import (
     AppendEdit,
     Checksum,
@@ -30,6 +34,15 @@ from marabrain.models import (
 )
 
 
+class MemoryContent(BaseModel):
+    """Identity and full Markdown required before external LLM disclosure."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
+    domain: Domain
+    permalink: Permalink
+    content: StrictStr
+
+
 def _edit_arguments(operation: EditOperation) -> list[str]:
     """Return the Crystalline operation name followed by its option flags."""
     match operation:
@@ -48,7 +61,9 @@ def _edit_arguments(operation: EditOperation) -> list[str]:
     assert_never(operation)
 
 
-def register_memory_tools(server: FastMCP, allowed_domains: frozenset[str] | None = None, command_timeout_seconds: float = 30.0) -> None:
+def register_memory_tools(
+    server: FastMCP, allowed_domains: frozenset[str] | None = None, command_timeout_seconds: float = 30.0, *, llm_settings: LLMSettings | None = None
+) -> None:
     """Register the five Crystalline-backed memory tools on the server."""
 
     registry = DomainRegistry.from_environment(command_timeout_seconds, allowed_domains)
@@ -66,11 +81,30 @@ def register_memory_tools(server: FastMCP, allowed_domains: frozenset[str] | Non
         ]
         return await run_json(["write", resolved, title, *options], content, command_timeout_seconds)
 
-    @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False})
-    async def read_memory(domain: Domain, permalink: Permalink) -> JsonObject:
-        """Read one memory by domain and permalink: full Markdown with frontmatter, checksum, links, observations, and relations."""
+    @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True})
+    async def read_memory(domain: Domain, permalink: Permalink, compress: bool = False, query: Query | None = None) -> JsonObject:
+        """Read one memory's full Markdown and metadata, or distill its content against a query.
+
+        With compress=true, query is required and full content is sent to the configured LLM.
+        The returned content is generated context marked compressed=true; checksum still identifies the original document.
+        Compression errors fail the tool. Default reads return native JSON without contacting an LLM.
+        """
+        if compress and query is None:
+            raise ToolError("A query is required when read compression is enabled.")
         (resolved,) = await registry.resolve([domain])
-        return await run_json(["read", permalink, f"--domain={resolved}"], timeout_seconds=command_timeout_seconds)
+        result = await run_json(["read", permalink, f"--domain={resolved}"], timeout_seconds=command_timeout_seconds)
+        if compress and query is not None:
+            settings = llm_settings if llm_settings is not None else LLMSettings()
+            settings.require_configured()
+            try:
+                memory = MemoryContent.model_validate(result)
+            except ValidationError:
+                raise ToolError("Crystalline returned invalid memory content for compression.") from None
+            if memory.domain != resolved or memory.permalink != permalink:
+                raise ToolError("Crystalline returned a different memory for compression.")
+            context = await compress_memory(settings, query, memory.content)
+            return {**result, "content": context, "compressed": True}
+        return result
 
     @server.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})
     async def edit_memory(domain: Domain, permalink: Permalink, operation: EditOperation, expected_checksum: Checksum | None = None) -> JsonObject:

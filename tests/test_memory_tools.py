@@ -226,7 +226,8 @@ async def test_tool_annotations_separate_reads_from_mutations(cli: Path) -> None
         hints = {tool.name: tool.annotations for tool in await client.list_tools()}
     assert {name for name, hint in hints.items() if hint and hint.read_only_hint} == {"health", "read_memory", "search_memories"}
     assert {name for name, hint in hints.items() if hint and hint.destructive_hint} == {"edit_memory", "delete_memory"}
-    assert all(hint and hint.open_world_hint is False for name, hint in hints.items() if name != "health")
+    assert all(hint and hint.open_world_hint is False for name, hint in hints.items() if name not in {"health", "read_memory"})
+    assert hints["read_memory"] and hints["read_memory"].open_world_hint is True
 
 
 def test_http_requires_authentication_before_any_memory_command(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:

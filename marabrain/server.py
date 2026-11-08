@@ -63,7 +63,7 @@ def create_server(settings: Settings) -> FastMCP:
             raise ToolError("Crystalline daemon is not responding.")
         return HealthResponse()
 
-    register_memory_tools(server, allowed_domains=policy, command_timeout_seconds=settings.command_timeout_seconds)
+    register_memory_tools(server, allowed_domains=policy, command_timeout_seconds=settings.command_timeout_seconds, llm_settings=settings.llm)
     return server
 
 
