@@ -108,6 +108,7 @@ filterwarnings = [
 
 [tool.coverage.run]
 source = ["marabrain"]
+patch = ["subprocess"]
 omit = [
     "*/tests/*",
     "*/test_*.py",
