@@ -3,7 +3,8 @@
 import json
 from typing import assert_never
 
-from fastmcp import FastMCP
+import anyio
+from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
 
@@ -34,6 +35,8 @@ from marabrain.models import (
     Tags,
     Title,
 )
+
+_COMPRESSION_PROGRESS_INTERVAL = 5.0
 
 
 class MemoryContent(BaseModel):
@@ -92,7 +95,7 @@ def register_memory_tools(
         return await run_json(["write", resolved, title, *options], content, command_timeout_seconds, context=captured, deadline=deadline)
 
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True})
-    async def read_memory(domain: Domain, permalink: Permalink, compress: bool = False, query: Query | None = None) -> JsonObject:
+    async def read_memory(domain: Domain, permalink: Permalink, ctx: Context, compress: bool = False, query: Query | None = None) -> JsonObject:
         """Read one memory's full Markdown and metadata, or distill its content against a query.
 
         With compress=true, query is required and full content is sent to the configured LLM.
@@ -113,8 +116,27 @@ def register_memory_tools(
                 raise ToolError("Crystalline returned invalid memory content for compression.") from None
             if memory.domain != resolved or memory.permalink != permalink:
                 raise ToolError("Crystalline returned a different memory for compression.")
-            compressed = await compress_memory(settings, query, memory.content)
-            return {**result, "content": compressed, "compressed": True}
+
+            async def report_wait() -> None:
+                """Report elapsed waiting time without claiming model completion progress."""
+                started = anyio.current_time()
+                while True:
+                    await ctx.report_progress(anyio.current_time() - started, message="Waiting for LLM compression.")
+                    await anyio.sleep(_COMPRESSION_PROGRESS_INTERVAL)
+
+            compression: str | ToolError | None = None
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(report_wait)
+                try:
+                    compression = await compress_memory(settings, query, memory.content)
+                except ToolError as error:
+                    compression = error
+                finally:
+                    tasks.cancel_scope.cancel()
+            if isinstance(compression, ToolError):
+                raise compression
+            assert compression is not None
+            return {**result, "content": compression, "compressed": True}
         return result
 
     @server.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})
