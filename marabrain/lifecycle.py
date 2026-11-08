@@ -1,6 +1,5 @@
 """Own a foreground Crystalline daemon for one application invocation."""
 
-import os
 import signal
 import subprocess
 import sys
@@ -13,6 +12,7 @@ from anyio.abc import Process
 from pydantic import BaseModel, Field, TypeAdapter
 
 from marabrain.config import EngineMode, Settings
+from marabrain.engine_context import EngineContext
 
 
 class EngineLifecycleError(RuntimeError):
@@ -25,11 +25,49 @@ class EngineStatus(BaseModel):
     pid: int = Field(strict=True, gt=0)
 
 
-async def probe_engine(timeout: float) -> bool:
+def startup_remaining(deadline: float | None) -> float | None:
+    """Return the remaining preparation budget, refusing further work after expiry."""
+    if deadline is None:
+        return None
+    remaining = deadline - anyio.current_time()
+    if remaining <= 0:
+        raise TimeoutError("Application startup deadline expired.")
+    return remaining
+
+
+async def run_startup_command(command: list[str], context: EngineContext, *, deadline: float | None = None, initialization: bool = False) -> bytes:
+    """Capture one startup command and reap its child even when cancellation crosses launch."""
+    output = bytearray()
+    await anyio.lowlevel.checkpoint()
+    with anyio.fail_after(startup_remaining(deadline)):
+        with anyio.CancelScope(shield=True) as launch:
+            process = await anyio.open_process(
+                command, stdin=subprocess.DEVNULL, stderr=sys.stderr if initialization else subprocess.DEVNULL, env=context.environment
+            )
+            try:
+                launch.shield = False
+                await anyio.lowlevel.checkpoint()
+                startup_remaining(deadline)
+                assert process.stdout is not None
+                async for chunk in process.stdout:
+                    output += chunk
+                code = await process.wait()
+                if code != 0:
+                    raise subprocess.CalledProcessError(code, command)
+            finally:
+                await stop_process(process)
+    return bytes(output)
+
+
+async def probe_engine(timeout: float, *, context: EngineContext | None = None, deadline: float | None = None) -> bool:
     """Return whether the status command succeeds within its allotted duration."""
     try:
-        with anyio.fail_after(timeout):
-            await anyio.run_process(["crystalline", "ctl", "status"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        command_deadline = anyio.current_time() + timeout
+        await run_startup_command(
+            ["crystalline", "ctl", "status"],
+            context if context is not None else EngineContext.capture(),
+            deadline=command_deadline if deadline is None else min(deadline, command_deadline),
+        )
     except OSError, subprocess.CalledProcessError, TimeoutError:
         return False
     return True
@@ -60,14 +98,18 @@ async def watch_engine(process: Process) -> None:
     raise EngineLifecycleError("Owned Crystalline daemon exited unexpectedly.")
 
 
-async def probe_owned_engine(process: Process, timeout: float) -> bool:
+async def probe_owned_engine(process: Process, timeout: float, *, context: EngineContext | None = None, deadline: float | None = None) -> bool:
     """Accept readiness only from the live foreground child this application launched."""
     try:
-        with anyio.fail_after(timeout):
-            status = await anyio.run_process(["crystalline", "ctl", "status"], stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        command_deadline = anyio.current_time() + timeout
+        status = await run_startup_command(
+            ["crystalline", "ctl", "status"],
+            context if context is not None else EngineContext.capture(),
+            deadline=command_deadline if deadline is None else min(deadline, command_deadline),
+        )
     except OSError, subprocess.CalledProcessError, TimeoutError:
         return False
-    identity = EngineStatus.model_validate_json(status.stdout)
+    identity = EngineStatus.model_validate_json(status)
     if identity.pid != process.pid:
         raise EngineLifecycleError("Managed mode refuses a competing Crystalline daemon.")
     await anyio.lowlevel.checkpoint()
@@ -84,58 +126,67 @@ async def cancel_on_signal(scope: anyio.CancelScope, signals: AsyncIterator[int]
 
 
 @asynccontextmanager
-async def engine_lifecycle(settings: Settings) -> AsyncGenerator[None]:
+async def engine_lifecycle(settings: Settings, *, context: EngineContext | None = None, deadline: float | None = None) -> AsyncGenerator[None]:
     """Start and supervise an engine only when managed mode is explicitly selected."""
+    bound_context = context if context is not None else EngineContext.capture()
     mode = settings.engine_mode
     match mode:
         case EngineMode.EXTERNAL:
             yield
             return
         case EngineMode.MANAGED:
-            async with managed_engine(settings):
+            async with managed_engine(settings, context=bound_context, deadline=deadline):
                 yield
             return
     assert_never(mode)
 
 
 @asynccontextmanager
-async def managed_engine(settings: Settings) -> AsyncGenerator[None]:
+async def managed_engine(settings: Settings, *, context: EngineContext | None = None, deadline: float | None = None) -> AsyncGenerator[None]:
     """Initialize and retain one daemon under the exclusive HOME/XDG precondition."""
 
-    if await probe_engine(settings.health_timeout_seconds):
+    bound_context = context if context is not None else EngineContext.capture()
+    startup_remaining(deadline)
+    if await probe_engine(settings.health_timeout_seconds, context=bound_context, deadline=deadline):
         raise EngineLifecycleError("Managed mode refuses a responsive preexisting Crystalline daemon.")
 
     # A subprocess makes blocking provider initialization cancellable without an
     # abandoned thread that could later write configuration after shutdown.
-    initialized = await anyio.run_process(
+    initialized = await run_startup_command(
         [
             sys.executable,
             "-c",
             "import json; from marabrain.embeddings import initialize_embeddings; print(json.dumps(initialize_embeddings()))",
         ],
-        stdin=subprocess.DEVNULL,
-        stderr=sys.stderr,
+        bound_context,
+        deadline=deadline,
+        initialization=True,
     )
-    overlay = TypeAdapter(dict[str, str]).validate_json(initialized.stdout, strict=True)
-    deadline = anyio.current_time() + settings.engine_startup_timeout_seconds
+    overlay = TypeAdapter(dict[str, str]).validate_json(initialized, strict=True)
+    await anyio.lowlevel.checkpoint()
+    startup_remaining(deadline)
+    readiness_deadline = anyio.current_time() + settings.engine_startup_timeout_seconds
+    if deadline is not None:
+        readiness_deadline = min(readiness_deadline, deadline)
     with anyio.CancelScope(shield=True) as launch:
         process = await anyio.open_process(
             ["crystalline", "serve", "--http", "off"],
             stdin=subprocess.DEVNULL,
             stdout=sys.stderr,
             stderr=sys.stderr,
-            env={**os.environ, **overlay},
+            env={**bound_context.environment, **overlay},
         )
         try:
             launch.shield = False
+            await anyio.lowlevel.checkpoint()
+            startup_remaining(readiness_deadline)
             async with anyio.create_task_group() as tasks:
                 tasks.start_soon(watch_engine, process)
-                with anyio.fail_after(max(0, deadline - anyio.current_time())):
+                with anyio.fail_after(startup_remaining(readiness_deadline)):
                     while True:
-                        remaining = deadline - anyio.current_time()
-                        if await probe_owned_engine(process, min(settings.health_timeout_seconds, max(0, remaining))):
+                        if await probe_owned_engine(process, settings.health_timeout_seconds, context=bound_context, deadline=readiness_deadline):
                             break
-                        await anyio.sleep(min(0.05, max(0, deadline - anyio.current_time())))
+                        await anyio.sleep(min(0.05, max(0, readiness_deadline - anyio.current_time())))
                 try:
                     yield
                 finally:
