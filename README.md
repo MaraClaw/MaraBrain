@@ -240,6 +240,7 @@ Rotate the credential by updating both the server and backend and restarting the
 | `MARABRAIN_OPERATION_TIMEOUT_SECONDS` | unset (disabled) | Optional positive finite total budget for each memory operation's activation wait and Crystalline phase in seconds; empty also disables it |
 | `MARABRAIN_MAX_TRANSIENT_PROCESSES` | unset (disabled) | Optional application-wide integer capacity of at least 2 for transient engine commands across workspaces; empty also disables it |
 | `MARABRAIN_MAX_CAPTURE_BYTES` | unset (disabled) | Optional positive integer ceiling on raw stdout bytes per captured child; empty also disables it |
+| `MARABRAIN_MAX_TOTAL_CAPTURE_BYTES` | unset (disabled) | Optional strict positive integer application-wide budget for retained raw stdout payload across workspaces and data/control commands; empty also disables it |
 | `MARABRAIN_DOMAIN_COMMAND_CAPACITY` | unset (disabled) | Optional positive integer final-command capacity applied independently to every workspace and resolved domain pair; empty also disables it |
 | `MARABRAIN_MAX_RESIDENT_WORKSPACES` | unset (disabled) | Optional strict positive integer cap on owned workspace runtimes in managed mode; empty also disables it; configured external mode is rejected |
 | `MARABRAIN_ENGINE_MODE` | `external` | `external` or `managed`; Docker's default command selects `managed` |
@@ -343,6 +344,25 @@ S bytes plus fixed read overhead; parsed-object memory, daemon diagnostics and L
 responses are excluded. Existing deadlines still apply. Leave either limit empty or
 unset to preserve existing behavior; malformed, fractional, zero and negative
 values are rejected, as is capacity below 2.
+
+`MARABRAIN_MAX_TOTAL_CAPTURE_BYTES=T` independently limits logical retained raw
+stdout payload across all captures in one application, including workspace memory
+and registry commands, status/readiness probes, and embedding initialization.
+Storage grows incrementally under this policy, so small responses do not reserve
+the per-child ceiling. Each chunk reserves bytes atomically before retention;
+the first chunk exceeding either configured byte limit fails immediately with the
+same fixed capture-limit error. There is no waiting for bytes, truncation, or retry.
+The reserved control process slot reserves no stdout bytes and can fail under
+data-capture pressure. Separate applications have independent byte budgets.
+
+Aliased views of one raw buffer count once. Its charge remains until child reaping,
+worker joining or stream closure, and JSON parsing or discard have all finished.
+Raw storage is cleared before its charge is released; initializer output is
+released before daemon launch and serving. This is a retained-payload bound,
+not an RSS or allocator guarantee: parsed objects, allocator slack, fixed read and
+transport buffers, stdin, stderr, daemon diagnostics, and LLM responses are excluded.
+Unset or empty preserves existing capture allocation behavior. Boolean, fractional,
+malformed, zero, and negative aggregate budgets are rejected without exposing input.
 
 Environment variables are read at startup. An originless MCP client is accepted;
 browser clients must use an explicitly allowed origin. Avoid wildcard host or
@@ -531,7 +551,8 @@ use `MARABRAIN_ENGINE_MODE=managed`, including the alternate preflight command, 
 local `external` setting does not reject a valid Docker cap. Invalid caps fail preflight;
 unset or empty caps preserve unbounded residency.
 
-`MARABRAIN_MAX_TRANSIENT_PROCESSES` and `MARABRAIN_MAX_CAPTURE_BYTES` are also
+`MARABRAIN_MAX_TRANSIENT_PROCESSES`, `MARABRAIN_MAX_CAPTURE_BYTES`, and
+`MARABRAIN_MAX_TOTAL_CAPTURE_BYTES` are also
 exported and forwarded identically to both containers, including sourced `.env`
 overrides. Both containers parse the same optional integer limits; empty or unset
 values disable them, and invalid values fail configuration preflight.
