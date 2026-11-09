@@ -9,6 +9,8 @@ SCRIPT = f'''#!{sys.executable}
 """Retain an engine configuration and file-backed memories across invocations."""
 import json, os, pathlib, sys
 root = pathlib.Path(__file__).parent
+if sys.argv[1:] == ["ctl", "status"]:
+    sys.exit(0)
 args = sys.argv[2:]
 content = sys.stdin.read()
 with (root / "calls.jsonl").open("a") as log:

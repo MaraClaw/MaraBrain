@@ -13,11 +13,12 @@ import pytest
 from anyio.abc import Process
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
+from memory_fake import WORKSPACE_ID
 from pydantic import SecretStr
 from test_engine_lifecycle import assert_reaped, await_file
 from test_engine_lifecycle import runtime as runtime
 
-from marabrain import server
+from marabrain import server, workspaces
 from marabrain.config import EngineMode, Settings, Transport
 from marabrain.engine_context import EngineContext
 from marabrain.lifecycle import engine_lifecycle, run_startup_command
@@ -130,7 +131,7 @@ async def test_programmatic_application_limits_share_context_through_preparation
     served = False
 
     @asynccontextmanager
-    async def prepare(settings: Settings, *, context: EngineContext | None = None, deadline: float | None = None) -> AsyncGenerator[None]:
+    async def prepare(manager: workspaces.WorkspaceManager, context: EngineContext, deadline: float | None) -> AsyncGenerator[None]:
         """Capture the application owner before ambient configuration changes."""
         nonlocal prepared
         assert context is not None
@@ -144,16 +145,19 @@ async def test_programmatic_application_limits_share_context_through_preparation
     async def serve(settings: Settings, stdin: anyio.AsyncFile[str] | None = None, *, context: EngineContext | None = None) -> None:
         """Exercise the serving adapter with the startup owner's limits and snapshot."""
         nonlocal served
-        assert context is prepared and context is not None
+        assert context is not None
         async with Client(server.create_server(settings, context=context)) as client:
             with pytest.raises(ToolError, match="capture limit"):
-                await client.call_tool("read_memory", {"domain": "notes", "permalink": "plan"})
+                await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "plan"})
+            assert prepared is not None
+            assert prepared.transients is context.transients
+            assert prepared.state_home != context.state_home
             with context.transients.admit(control=True):
                 with pytest.raises(ToolError, match="daemon is not responding"):
                     await client.call_tool("health", {})
         served = True
 
-    monkeypatch.setattr(server, "engine_lifecycle", prepare)
+    monkeypatch.setattr(workspaces.WorkspaceManager, "_engine", prepare)
     monkeypatch.setattr(server, "run_transport", serve)
     await server.run_application(settings)
     assert served

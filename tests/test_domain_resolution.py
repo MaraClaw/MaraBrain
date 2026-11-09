@@ -12,14 +12,13 @@ import pytest
 from anyio.abc import SocketAttribute, SocketStream
 from anyio.streams.memory import MemoryObjectReceiveStream
 from domain_fake import domain_cli as domain_cli
-from fastmcp import Client, FastMCP
+from fastmcp import Client
 from fastmcp.exceptions import ToolError
-from memory_fake import FAKE_CLI, RECEIPT, call, calls
+from memory_fake import FAKE_CLI, RECEIPT, WORKSPACE_ACTIVATION, WORKSPACE_ID, call, calls, workspace_registry
 from test_domain_registry import argv, rows
 
 from marabrain.config import Settings
 from marabrain.domain_registry import DomainRegistry
-from marabrain.memory_tools import register_memory_tools
 from marabrain.server import create_server
 
 
@@ -37,12 +36,12 @@ from marabrain.server import create_server
 async def test_tools_resolve_existing_names_without_registering(cli: Path, spelling: str, tool: str, arguments: dict[str, object], expected: list[str]) -> None:
     """Use the exact registration key for case variants and effective engine aliases."""
     (cli / "domains.json").write_text(json.dumps([{"name": "Legacy", "canonical_name": "canonical", "aliases": ["alias"]}]))
-    await DomainRegistry.from_environment(5).synchronize()
+    await workspace_registry().synchronize()
     (cli / "calls.jsonl").unlink()
     domain_arguments = {"domains": [spelling]} if tool == "search_memories" else {"domain": spelling}
-    await call(tool, {**arguments, **domain_arguments})
-    assert argv(cli) == [["--json", *expected]]
-    assert rows() == ["Legacy"]
+    await call(tool, {"workspace_id": WORKSPACE_ID, **arguments, **domain_arguments})
+    assert argv(cli) == [*WORKSPACE_ACTIVATION, ["--json", *expected]]
+    assert rows(workspace=True) == ["Legacy"]
 
 
 @pytest.mark.parametrize(
@@ -63,12 +62,12 @@ async def test_ambiguous_alias_normalization_preserves_snapshot(cli: Path, snaps
 async def test_allowlist_requires_exact_resolved_registration_before_alias_write(cli: Path) -> None:
     """Deny an admitted alias when its resolved registration is outside the allowlist."""
     (cli / "domains.json").write_text(json.dumps([{"name": "private", "aliases": ["allowed"]}]))
-    await DomainRegistry.from_environment(5).synchronize()
+    await workspace_registry().synchronize()
     (cli / "calls.jsonl").unlink()
     async with Client(create_server(Settings(allowed_domains=("allowed",)))) as client:
         with pytest.raises(ToolError, match="not permitted"):
-            await client.call_tool("create_memory", {"domain": "allowed", "title": "one", "content": "body"})
-    assert argv(cli) == []
+            await client.call_tool("create_memory", {"workspace_id": WORKSPACE_ID, "domain": "allowed", "title": "one", "content": "body"})
+    assert argv(cli) == WORKSPACE_ACTIVATION
 
 
 async def test_shared_registry_refuses_another_engine_configuration(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,22 +82,26 @@ async def test_shared_registry_refuses_another_engine_configuration(cli: Path, m
 async def test_shadowed_canonical_name_keeps_exact_registration_precedence(cli: Path) -> None:
     """Retain the pinned engine's local-name precedence when another manifest uses that name."""
     (cli / "domains.json").write_text(json.dumps([{"name": "first", "canonical_name": "second", "shadowed": True}, {"name": "second"}]))
-    await DomainRegistry.from_environment(5).synchronize()
+    await workspace_registry().synchronize()
     (cli / "calls.jsonl").unlink()
-    await call("read_memory", {"domain": "second", "permalink": "one"})
-    assert argv(cli) == [["--json", "read", "one", "--domain=second"]]
-    assert rows() == ["first", "second"]
+    await call("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "second", "permalink": "one"})
+    assert argv(cli) == [*WORKSPACE_ACTIVATION, ["--json", "read", "one", "--domain=second"]]
+    assert rows(workspace=True) == ["first", "second"]
 
 
 @pytest.mark.parametrize("shadowed", ["true", "false", 1, 0, None])
 async def test_malformed_shadowing_metadata_never_replaces_snapshot_or_registers(cli: Path, shadowed: object) -> None:
     """Reject coercible shadowing flags before losing an existing canonical route."""
-    (cli / "domains.json").write_text(json.dumps([{"name": "local", "canonical_name": "canonical", "shadowed": shadowed}]))
-    with pytest.raises(ToolError, match="invalid domain list"):
-        await DomainRegistry.from_environment(5).synchronize()
-    with pytest.raises(ToolError, match="invalid domain list"):
-        await call("create_memory", {"domain": "canonical", "title": "one", "content": "body"})
+    async with Client(create_server(Settings())) as client:
+        await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "ready", "domains": ["notes"]})
+        (cli / "calls.jsonl").unlink()
+        (cli / "domains.json").write_text(json.dumps([{"name": "local", "canonical_name": "canonical", "shadowed": shadowed}]))
+        with pytest.raises(ToolError, match="invalid domain list"):
+            await DomainRegistry.from_environment(5).synchronize()
+        with pytest.raises(ToolError, match="invalid domain list"):
+            await client.call_tool("create_memory", {"workspace_id": WORKSPACE_ID, "domain": "canonical", "title": "one", "content": "body"})
     assert rows() == ["notes"]
+    assert rows(workspace=True) == ["notes"]
     assert argv(cli) == [["--json", "domain", "list"], ["--json", "domain", "list"]]
 
 
@@ -161,15 +164,18 @@ async def command_barrier(cli: Path) -> AsyncGenerator[tuple[MemoryObjectReceive
 async def test_final_commands_share_resolved_domain_quota(cli: Path, spelling: str, tool: str, arguments: dict[str, object]) -> None:
     """Refuse all final command variants sharing one resolved identity without launching them."""
     (cli / "domains.json").write_text(json.dumps([{"name": "Legacy", "canonical_name": "canonical", "aliases": ["alias"]}]))
-    await DomainRegistry.from_environment(5).synchronize()
+    await workspace_registry().synchronize()
     (cli / "calls.jsonl").unlink()
-    server = FastMCP("quotas")
-    register_memory_tools(server, domain_command_capacity=1)
+    server = create_server(Settings(domain_command_capacity=1))
     async with command_barrier(cli) as (started, release), Client(server) as client:
+        await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "ready", "domains": ["Legacy"]})
+        (cli / "calls.jsonl").unlink()
 
         async def occupy() -> None:
             """Hold one resolved exact-name permit through a real child."""
-            assert (await client.call_tool("read_memory", {"domain": "Legacy", "permalink": "held"})).structured_content == RECEIPT
+            assert (
+                await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "Legacy", "permalink": "held"})
+            ).structured_content == RECEIPT
 
         with anyio.fail_after(10):
             async with anyio.create_task_group() as tasks:
@@ -178,22 +184,23 @@ async def test_final_commands_share_resolved_domain_quota(cli: Path, spelling: s
                 try:
                     supplied = {"domains": [spelling]} if tool == "search_memories" else {"domain": spelling}
                     with pytest.raises(ToolError, match="domain command capacity is exhausted"):
-                        await client.call_tool(tool, {**arguments, **supplied})
+                        await client.call_tool(tool, {"workspace_id": WORKSPACE_ID, **arguments, **supplied})
                     assert len(calls(cli)) == 1
                 finally:
                     release.set()
-        assert (await client.call_tool("read_memory", {"domain": spelling, "permalink": "one"})).structured_content == RECEIPT
+        assert (await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": spelling, "permalink": "one"})).structured_content == RECEIPT
 
 
 async def test_rejected_final_create_preserves_completed_registration(domain_cli: Path) -> None:
     """Register a missing domain outside its occupied final-command quota without undoing it on refusal."""
-    server = FastMCP("registration")
-    register_memory_tools(server, domain_command_capacity=1)
+    server = create_server(Settings(domain_command_capacity=1))
     async with command_barrier(domain_cli) as (started, release), Client(server) as client:
+        await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "ready", "domains": ["notes"]})
+        (domain_cli / "calls.jsonl").unlink()
 
         async def occupy() -> None:
             """Retain a new-name command permit while creation registers the domain."""
-            result = await client.call_tool("read_memory", {"domain": "new", "permalink": "held"})
+            result = await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "new", "permalink": "held"})
             assert result.structured_content == {"domain": "new", "content": "body"}
 
         with anyio.fail_after(10):
@@ -202,14 +209,16 @@ async def test_rejected_final_create_preserves_completed_registration(domain_cli
                 await started.receive()
                 try:
                     with pytest.raises(ToolError, match="domain command capacity is exhausted"):
-                        await client.call_tool("create_memory", {"domain": "new", "title": "one", "content": "body"})
-                    assert rows() == ["new", "notes"]
+                        await client.call_tool("create_memory", {"workspace_id": WORKSPACE_ID, "domain": "new", "title": "one", "content": "body"})
+                    assert rows(workspace=True) == ["new", "notes"]
                     assert [arguments[1:3] for arguments in argv(domain_cli)] == [["read", "held"], ["domain", "list"], ["domain", "init"], ["domain", "add"]]
-                    registry = DomainRegistry.from_environment(5)
+                    registry = workspace_registry()
                     (registry.storage.domain_path("new") / "held.md").write_text("body")
                 finally:
                     release.set()
-        assert (await client.call_tool("create_memory", {"domain": "new", "title": "one", "content": "body"})).structured_content == {
+        assert (
+            await client.call_tool("create_memory", {"workspace_id": WORKSPACE_ID, "domain": "new", "title": "one", "content": "body"})
+        ).structured_content == {
             "domain": "new",
             "permalink": "one",
         }

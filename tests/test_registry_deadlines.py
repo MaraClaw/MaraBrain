@@ -11,25 +11,30 @@ import anyio
 import pytest
 from anyio.abc import SocketAttribute, SocketStream
 from domain_fake import SCRIPT, domain_cli as domain_cli
-from fastmcp import Client, FastMCP
+from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 from fastmcp.exceptions import ToolError
 from test_domain_registry import argv
+from memory_fake import WORKSPACE_ID, workspace_registry
 
 from marabrain.domain_registry import DomainRegistry
-from marabrain.memory_tools import register_memory_tools
+from marabrain.config import Settings
+from marabrain.server import create_server
 
 
 async def test_registration_commands_share_one_operation_budget(domain_cli: Path) -> None:
     """Consume one cumulative budget across listing, initialization, and registration before any write."""
-    (domain_cli / "crystalline").write_text(SCRIPT.replace("import json, os, pathlib, sys", "import json, os, pathlib, sys, time\ntime.sleep(0.4)"))
-    server = FastMCP("bounded")
-    register_memory_tools(server, command_timeout_seconds=5, operation_timeout_seconds=1)
+    server = create_server(Settings(command_timeout_seconds=5, operation_timeout_seconds=1))
     async with Client(server) as client:
+        await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "ready", "domains": ["notes"]})
+        (domain_cli / "calls.jsonl").unlink()
+        delayed = SCRIPT.replace("import json, os, pathlib, sys", "import json, os, pathlib, sys, time")
+        (domain_cli / "crystalline").write_text(delayed.replace('if args == ["domain", "list"]:', 'time.sleep(0.4)\nif args == ["domain", "list"]:'))
         with pytest.raises(ToolError, match="may or may not have been applied"):
-            await client.call_tool("create_memory", {"domain": "new", "title": "note", "content": "body"})
+            await client.call_tool("create_memory", {"workspace_id": WORKSPACE_ID, "domain": "new", "title": "note", "content": "body"})
+    assert [arguments[:3] for arguments in argv(domain_cli)] == [["--json", "domain", stage] for stage in ("list", "init", "add")]
     assert all(arguments[1] != "write" for arguments in argv(domain_cli))
-    assert not (DomainRegistry.from_environment(5).storage.root / "domains/new/note.md").exists()
+    assert not (workspace_registry().storage.root / "domains/new/note.md").exists()
 
 
 @pytest.mark.parametrize("interrupt", ["timeout", "cancel"])
@@ -47,8 +52,7 @@ async def test_uncertain_registration_invalidates_durably_and_recovers_after_res
         '    if mode == "add-uncertain":',
     )
     (domain_cli / "crystalline").write_text(gated)
-    server = FastMCP("registration")
-    register_memory_tools(server, operation_timeout_seconds=2 if interrupt == "timeout" else None)
+    server = create_server(Settings(operation_timeout_seconds=2 if interrupt == "timeout" else None))
     send, receive = anyio.create_memory_object_stream[int](1)
     completed = anyio.Event()
     scope = anyio.CancelScope()
@@ -68,9 +72,9 @@ async def test_uncertain_registration_invalidates_durably_and_recovers_after_res
                 with scope:
                     if interrupt == "timeout":
                         with pytest.raises(ToolError, match="may or may not have been applied"):
-                            await client.call_tool("create_memory", {"domain": "new", "title": "note", "content": "body"})
+                            await client.call_tool("create_memory", {"workspace_id": WORKSPACE_ID, "domain": "new", "title": "note", "content": "body"})
                     else:
-                        await client.call_tool("create_memory", {"domain": "new", "title": "note", "content": "body"})
+                        await client.call_tool("create_memory", {"workspace_id": WORKSPACE_ID, "domain": "new", "title": "note", "content": "body"})
             finally:
                 completed.set()
 
@@ -86,7 +90,7 @@ async def test_uncertain_registration_invalidates_durably_and_recovers_after_res
 
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
-    registry = DomainRegistry.from_environment(5)
+    registry = workspace_registry()
     with closing(sqlite3.connect(registry.storage.root / "domains.sqlite3")) as database:
         assert database.execute("SELECT value FROM metadata WHERE key = 'synchronized'").fetchone() is None
     assert all(arguments[1] != "write" for arguments in argv(domain_cli))
@@ -94,7 +98,7 @@ async def test_uncertain_registration_invalidates_durably_and_recovers_after_res
     assert await registry.resolve(["SHORTCUT"]) == ["new"]
     transport = StdioTransport(sys.executable, ["-m", "marabrain"], env={**os.environ, "MARABRAIN_ENGINE_MODE": "external", "MARABRAIN_TRANSPORT": "stdio"})
     async with Client(transport) as restarted:
-        response = await restarted.call_tool("search_memories", {"query": "body", "domains": ["Shortcut"]})
+        response = await restarted.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "body", "domains": ["Shortcut"]})
     assert response.structured_content == {"arguments": ["search", "--domain=new", "--limit=10", "--page=1", "body"]}
     assert sum(arguments[:3] == ["--json", "domain", "add"] for arguments in argv(domain_cli)) == 1
 

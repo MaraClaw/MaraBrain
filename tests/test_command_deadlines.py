@@ -11,17 +11,16 @@ from pathlib import Path
 import anyio
 import pytest
 from anyio.abc import SocketAttribute, SocketStream
-from fastmcp import Client, FastMCP
+from fastmcp import Client
+from fastmcp.client.transports import FastMCPTransport
 from fastmcp.exceptions import ToolError
 
 from marabrain.config import Settings
 from marabrain.crystalline import run_json
-from marabrain.domain_registry import DomainRegistry
 from marabrain.engine_context import EngineContext
 from marabrain.llm_config import LLMSettings
-from marabrain.memory_tools import register_memory_tools
 from marabrain.server import create_server
-from memory_fake import RECEIPT, calls, respond
+from memory_fake import RECEIPT, WORKSPACE_ID, calls, external_cli, respond, workspace_registry
 
 
 async def test_mcp_cancellation_reaps_running_command(cli: Path) -> None:
@@ -29,17 +28,8 @@ async def test_mcp_cancellation_reaps_running_command(cli: Path) -> None:
     listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
     port = listener.extra(SocketAttribute.local_port)
     executable = cli / "crystalline"
-    executable.write_text(
-        f"#!{sys.executable}\n"
-        "import os, socket, time\n"
-        f"s = socket.create_connection(('127.0.0.1', {port}))\n"
-        "s.sendall(str(os.getpid()).encode())\n"
-        "s.recv(1)\n"
-        "time.sleep(60)\n"
-    )
-    server = FastMCP("test")
     context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=1024)
-    register_memory_tools(server, context=context)
+    server = create_server(Settings(), context=context)
     send, receive = anyio.create_memory_object_stream[int](1)
 
     async def started(connection: SocketStream) -> None:
@@ -50,10 +40,17 @@ async def test_mcp_cancellation_reaps_running_command(cli: Path) -> None:
 
     pid = 0
     async with send, receive, listener, Client(server) as client:
+        await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "ready", "domains": ["notes"]})
+        executable.write_text(
+            external_cli(
+                f"import os, socket, time\ns = socket.create_connection(('127.0.0.1', {port}))\n"
+                "s.sendall(str(os.getpid()).encode())\ns.recv(1)\ntime.sleep(60)\n"
+            )
+        )
 
         async def request() -> None:
             """Run the request until its cancel scope is cancelled."""
-            await client.call_tool("read_memory", {"domain": "notes", "permalink": "team/plan"})
+            await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "team/plan"})
 
         with anyio.fail_after(15):
             async with anyio.create_task_group() as group:
@@ -71,23 +68,27 @@ async def test_mcp_cancellation_reaps_running_command(cli: Path) -> None:
 
 async def test_concurrent_servers_use_independent_command_deadlines(cli: Path) -> None:
     """Allow a delayed command on one server while another server times out."""
-    (cli / "crystalline").write_text(f"#!{sys.executable}\nimport time\ntime.sleep(0.5)\nprint('{{\"ok\": true}}')\n")
     fast = create_server(Settings(command_timeout_seconds=0.2))
     slow = create_server(Settings(command_timeout_seconds=5.0))
 
-    async def request(server: FastMCP, succeeds: bool) -> None:
+    async def request(client: Client[FastMCPTransport], succeeds: bool) -> None:
         """Verify the request result under one captured deadline."""
-        async with Client(server) as client:
-            if succeeds:
-                assert (await client.call_tool("read_memory", {"domain": "notes", "permalink": "plan"})).structured_content == {"ok": True}
-            else:
-                with pytest.raises(ToolError, match="may or may not have been applied"):
-                    await client.call_tool("read_memory", {"domain": "notes", "permalink": "plan"})
+        if succeeds:
+            assert (await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "plan"})).structured_content == {
+                "ok": True
+            }
+        else:
+            with pytest.raises(ToolError, match="may or may not have been applied"):
+                await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "plan"})
 
     with anyio.fail_after(15):
-        async with anyio.create_task_group() as group:
-            group.start_soon(request, fast, False)
-            group.start_soon(request, slow, True)
+        async with Client(fast) as fast_client, Client(slow) as slow_client:
+            for client in (fast_client, slow_client):
+                await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "ready", "domains": ["notes"]})
+            (cli / "crystalline").write_text(external_cli("import time\ntime.sleep(0.5)\nprint('{\"ok\": true}')\n"))
+            async with anyio.create_task_group() as group:
+                group.start_soon(request, fast_client, False)
+                group.start_soon(request, slow_client, True)
 
 
 async def test_expired_shared_deadline_refuses_cli_dispatch(cli: Path) -> None:
@@ -114,43 +115,48 @@ async def test_cli_obeys_earlier_command_or_shared_deadline_and_reaps_child(cli:
 @pytest.mark.parametrize(
     "tool,arguments",
     [
-        ("create_memory", {"domain": "new", "title": "note", "content": "body"}),
-        ("read_memory", {"domain": "notes", "permalink": "note"}),
-        ("edit_memory", {"domain": "notes", "permalink": "note", "operation": {"type": "append", "content": "body"}}),
-        ("delete_memory", {"domain": "notes", "permalink": "note"}),
-        ("search_memories", {"domains": ["notes"], "query": "body"}),
+        ("create_memory", {"workspace_id": WORKSPACE_ID, "domain": "new", "title": "note", "content": "body"}),
+        ("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "note"}),
+        ("edit_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "note", "operation": {"type": "append", "content": "body"}}),
+        ("delete_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "note"}),
+        ("search_memories", {"workspace_id": WORKSPACE_ID, "domains": ["notes"], "query": "body"}),
     ],
 )
 async def test_operation_budget_includes_registry_lock_wait(cli: Path, tool: str, arguments: dict[str, object]) -> None:
     """Expire each MCP operation while waiting for the registry without dispatching a command."""
-    registry = DomainRegistry.from_environment(5)
-    server = FastMCP("bounded")
-    register_memory_tools(server, operation_timeout_seconds=0.1)
-    async with registry.storage.locked(), Client(server) as client:
-        with pytest.raises(ToolError, match="operation deadline expired"):
-            await client.call_tool(tool, arguments)
+    registry = workspace_registry()
+    server = create_server(Settings(operation_timeout_seconds=0.1))
+    async with Client(server) as client:
+        await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "ready", "domains": ["notes"]})
+        (cli / "calls.jsonl").unlink()
+        async with registry.storage.locked():
+            with pytest.raises(ToolError, match="operation deadline expired"):
+                await client.call_tool(tool, arguments)
     assert calls(cli) == []
 
 
 async def test_concurrent_servers_keep_independent_operation_budgets(cli: Path) -> None:
     """Expire one operation while a concurrent server completes under its own longer budget."""
-    (cli / "crystalline").write_text(f"#!{sys.executable}\nimport time\ntime.sleep(0.3)\nprint('{{\"ok\": true}}')\n")
-    fast, slow = FastMCP("fast"), FastMCP("slow")
-    register_memory_tools(fast, operation_timeout_seconds=0.1)
-    register_memory_tools(slow, operation_timeout_seconds=5)
+    fast = create_server(Settings(operation_timeout_seconds=0.1))
+    slow = create_server(Settings(operation_timeout_seconds=5))
 
-    async def request(server: FastMCP, succeeds: bool) -> None:
+    async def request(client: Client[FastMCPTransport], succeeds: bool) -> None:
         """Check each response against the server's operation budget."""
-        async with Client(server) as client:
-            if succeeds:
-                assert (await client.call_tool("search_memories", {"query": "body", "domains": ["notes"]})).structured_content == {"ok": True}
-            else:
-                with pytest.raises(ToolError, match="may or may not have been applied"):
-                    await client.call_tool("search_memories", {"query": "body", "domains": ["notes"]})
+        if succeeds:
+            assert (await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "body", "domains": ["notes"]})).structured_content == {
+                "ok": True
+            }
+        else:
+            with pytest.raises(ToolError, match="may or may not have been applied"):
+                await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "body", "domains": ["notes"]})
 
-    async with anyio.create_task_group() as tasks:
-        tasks.start_soon(request, fast, False)
-        tasks.start_soon(request, slow, True)
+    async with Client(fast) as fast_client, Client(slow) as slow_client:
+        for client in (fast_client, slow_client):
+            await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "ready", "domains": ["notes"]})
+        (cli / "crystalline").write_text(external_cli("import time\ntime.sleep(0.3)\nprint('{\"ok\": true}')\n"))
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(request, fast_client, False)
+            tasks.start_soon(request, slow_client, True)
 
 
 @pytest.mark.parametrize("limited_by", ["global", "domain"])
@@ -160,8 +166,7 @@ async def test_cancellation_during_launch_reaps_child_before_return(cli: Path, m
     pids: list[int] = []
     original = subprocess.Popen
     context = EngineContext.capture(max_transient_processes=2 if limited_by == "global" else 3, max_capture_bytes=1024)
-    server = FastMCP("launch")
-    register_memory_tools(server, context=context, domain_command_capacity=1 if limited_by == "domain" else None)
+    server = create_server(Settings(domain_command_capacity=1 if limited_by == "domain" else None), context=context)
 
     class GatedLaunch(original[bytes]):
         """Pause delivery of a real child handle to exercise cancellation during launch."""
@@ -173,16 +178,17 @@ async def test_cancellation_during_launch_reaps_child_before_return(cli: Path, m
             launched.set()
             release.wait()
 
-    (cli / "crystalline").write_text(f"#!{sys.executable}\nimport signal\nsignal.pause()\n")
-    monkeypatch.setattr("marabrain.crystalline.subprocess.Popen", GatedLaunch)
     scope = anyio.CancelScope()
 
     async with Client(server) as client:
+        await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "ready", "domains": ["notes"]})
+        (cli / "crystalline").write_text(external_cli("import signal\nsignal.pause()\n"))
+        monkeypatch.setattr("marabrain.crystalline.subprocess.Popen", GatedLaunch)
 
         async def request() -> None:
             """Run one MCP command inside the externally cancellable request scope."""
             with scope:
-                await client.call_tool("read_memory", {"domain": "notes", "permalink": "note"})
+                await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "note"})
 
         with anyio.fail_after(10):
             async with anyio.create_task_group() as tasks:
@@ -193,7 +199,7 @@ async def test_cancellation_during_launch_reaps_child_before_return(cli: Path, m
                     await anyio.lowlevel.checkpoint()
                     error = "domain command capacity" if limited_by == "domain" else "transient process capacity"
                     with pytest.raises(ToolError, match=error):
-                        await client.call_tool("delete_memory", {"domain": "notes", "permalink": "note"})
+                        await client.call_tool("delete_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "note"})
                     assert len(pids) == 1
                 finally:
                     release.set()
@@ -201,9 +207,10 @@ async def test_cancellation_during_launch_reaps_child_before_return(cli: Path, m
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
     assert not [worker for worker in threading.enumerate() if worker.name == "marabrain-cli"]
-    (cli / "crystalline").write_text(f"#!{sys.executable}\nprint('{{}}')\n")
+    monkeypatch.setattr("marabrain.crystalline.subprocess.Popen", original)
+    (cli / "crystalline").write_text(external_cli("print('{}')\n"))
     async with Client(server) as client:
-        assert (await client.call_tool("read_memory", {"domain": "notes", "permalink": "note"})).structured_content == {}
+        assert (await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "note"})).structured_content == {}
 
 
 async def test_read_releases_domain_before_waiting_for_compression(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -221,13 +228,16 @@ async def test_read_releases_domain_before_waiting_for_compression(cli: Path, mo
         return "compressed"
 
     monkeypatch.setattr("marabrain.memory_tools.compress_memory", compress)
-    server = FastMCP("compression")
-    register_memory_tools(server, llm_settings=settings, domain_command_capacity=1)
+    server = create_server(Settings(llm=settings, domain_command_capacity=1))
     async with Client(server) as client:
+        await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "ready", "domains": ["notes"]})
+        (cli / "calls.jsonl").unlink()
 
         async def request() -> None:
             """Complete the original compressed request after a second command has dispatched."""
-            result = await client.call_tool("read_memory", {"domain": "notes", "permalink": "note", "compress": True, "query": "topic"})
+            result = await client.call_tool(
+                "read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "note", "compress": True, "query": "topic"}
+            )
             assert result.structured_content == {**native, "content": "compressed", "compressed": True}
 
         with anyio.fail_after(10):
@@ -236,7 +246,9 @@ async def test_read_releases_domain_before_waiting_for_compression(cli: Path, mo
                 await started.wait()
                 try:
                     respond(cli)
-                    assert (await client.call_tool("search_memories", {"query": "topic", "domains": ["notes"]})).structured_content == RECEIPT
+                    assert (
+                        await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "topic", "domains": ["notes"]})
+                    ).structured_content == RECEIPT
                     assert len(calls(cli)) == 2
                 finally:
                     release.set()

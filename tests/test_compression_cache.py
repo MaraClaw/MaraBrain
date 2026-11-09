@@ -116,7 +116,7 @@ async def test_lru_obeys_entry_and_utf8_payload_limits(entries: int, payload_byt
     cache = CompressionCache(settings, compressor=provider)
     async with cache.lifespan():
         for content in ("\u00e9\u00e9", "xx", "\u00e9\u00e9", "x", "\u00e9\u00e9", "xx"):
-            assert await cache.get("notes", "p", "q", content) == content
+            assert await cache.get("notes", "p", "q", content, workspace_id="test-workspace") == content
     assert calls == ["\u00e9\u00e9", "xx", "x", "xx"]
 
 
@@ -133,7 +133,7 @@ async def test_oversized_output_is_returned_without_storage_or_eviction() -> Non
     cache = CompressionCache(settings, compressor=provider)
     async with cache.lifespan():
         for content in ("fit", "\u00e9\u00e9\u00e9", "fit", "\u00e9\u00e9\u00e9"):
-            assert await cache.get("notes", "p", "q", content) == content
+            assert await cache.get("notes", "p", "q", content, workspace_id="test-workspace") == content
     assert calls == ["fit", "\u00e9\u00e9\u00e9", "\u00e9\u00e9\u00e9"]
 
 
@@ -156,12 +156,12 @@ async def test_exact_identity_and_instances_separate_cached_results() -> None:
         ("notes", "p", "q", "body\n"),
     ]
     async with first.lifespan(), second.lifespan():
-        results = [await first.get(*identity) for identity in identities]
+        results = [await first.get(*identity, workspace_id="test-workspace") for identity in identities]
         assert results == ["1", "2", "3", "4", "5"]
-        assert await first.get(*identities[0]) == "1"
-        assert await second.get(*identities[0]) == "6"
-        assert await first.get("other", "p", "q", "body") == "7"
-        assert await first.get("other", "p", "q", "body") == "7"
+        assert await first.get(*identities[0], workspace_id="test-workspace") == "1"
+        assert await second.get(*identities[0], workspace_id="test-workspace") == "6"
+        assert await first.get("other", "p", "q", "body", workspace_id="test-workspace") == "7"
+        assert await first.get("other", "p", "q", "body", workspace_id="test-workspace") == "7"
     assert len(calls) == 7
 
 
@@ -178,7 +178,7 @@ async def test_all_domains_have_independent_eviction_limits(entries: int, payloa
     cache = CompressionCache(LLMSettings(compression_cache_max_entries=entries, compression_cache_max_bytes=payload_bytes), compressor=provider)
     async with cache.lifespan():
         for domain, content in (("notes", "one"), ("Exact Name", "two"), ("notes", "one"), ("notes", "tri"), ("notes", "one"), ("Exact Name", "two")):
-            assert await cache.get(domain, "p", "q", content) == content
+            assert await cache.get(domain, "p", "q", content, workspace_id="test-workspace") == content
     assert calls == ["one", "two", "tri", "one"]
 
 
@@ -194,6 +194,6 @@ async def test_new_lifespan_discards_previous_results() -> None:
 
     cache = CompressionCache(LLMSettings(compression_cache_max_entries=1, compression_cache_max_bytes=5), compressor=provider)
     async with cache.lifespan():
-        assert await cache.get("notes", "p", "q", "body") == "1"
+        assert await cache.get("notes", "p", "q", "body", workspace_id="test-workspace") == "1"
     async with cache.lifespan():
-        assert await cache.get("notes", "p", "q", "body") == "2"
+        assert await cache.get("notes", "p", "q", "body", workspace_id="test-workspace") == "2"

@@ -12,8 +12,11 @@ from pathlib import Path
 import anyio
 import pytest
 from fastmcp import Client, FastMCP
+from memory_fake import WORKSPACE_ID
 
-from marabrain.memory_tools import register_memory_tools
+from marabrain.config import Settings
+from marabrain.server import create_server
+from marabrain.workspace_storage import prepare_workspace
 from marabrain.engine_context import EngineContext
 from marabrain.domain_registry import DomainRegistry
 from fastmcp.exceptions import ToolError
@@ -37,6 +40,7 @@ async def test_memory_servers_retain_home_defaults_after_environment_changes(
     (cli / "crystalline").write_text(
         f"#!{sys.executable}\n"
         "import json, os, pathlib, sys\n"
+        "if sys.argv[1:] == ['ctl', 'status']: sys.exit(0)\n"
         "if sys.argv[2:] == ['domain', 'list']:\n"
         "    print(json.dumps({'domains': [{'name': 'notes'}]}))\n"
         "else:\n"
@@ -65,9 +69,16 @@ async def test_memory_servers_retain_home_defaults_after_environment_changes(
                 monkeypatch.setenv(variable, "relative-root")
         if root_mode == "tilde":
             monkeypatch.setenv("CRYSTALLINE_CONFIG", "~/selected.yaml")
-        server = FastMCP(name)
-        register_memory_tools(server)
-        servers.append((server, home, state, name))
+        root = Path(os.environ["MARABRAIN_WORKSPACE_ROOT"]) / name
+        settings = Settings(workspace_root=root)
+        context = EngineContext.for_application(settings)
+        prepare_workspace(WORKSPACE_ID, root)
+        selected_context = context.for_workspace(WORKSPACE_ID, root)
+        selected_config = Path(selected_context.environment["XDG_CONFIG_HOME"]) / "crystalline/config.yaml"
+        selected_config.parent.mkdir(parents=True, exist_ok=True)
+        selected_config.write_text(name)
+        server = create_server(settings, context=context)
+        servers.append((server, Path(selected_context.environment["HOME"]), selected_context.state_home, name))
     monkeypatch.setenv("HOME", str(tmp_path / "ambient"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "ambient-config"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "ambient-state"))
@@ -76,7 +87,11 @@ async def test_memory_servers_retain_home_defaults_after_environment_changes(
     async def request(server: FastMCP, home: Path, state: Path, selected: str) -> None:
         """Assert that the command resolves the bound engine state through MCP."""
         async with Client(server) as client:
-            assert (await client.call_tool(tool, arguments)).structured_content == {"home": str(home), "state": str(state), "selected": selected}
+            assert (await client.call_tool(tool, {"workspace_id": WORKSPACE_ID, **arguments})).structured_content == {
+                "home": str(home),
+                "state": str(state),
+                "selected": selected,
+            }
         assert (state / "marabrain/domains.sqlite3").is_file()
 
     async with anyio.create_task_group() as tasks:

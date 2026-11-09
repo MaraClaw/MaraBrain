@@ -8,9 +8,9 @@ from pathlib import Path
 import anyio
 import pytest
 from anyio.abc import Process, SocketAttribute, SocketStream
-from fastmcp import Client, FastMCP
+from fastmcp import Client
 from fastmcp.exceptions import ToolError
-from memory_fake import RECEIPT, calls
+from memory_fake import RECEIPT, WORKSPACE_ID, calls
 from test_domain_resolution import command_barrier
 
 from marabrain import lifecycle
@@ -18,7 +18,6 @@ from marabrain.config import Settings
 from marabrain.crystalline import run_json
 from marabrain.engine_context import EngineContext
 from marabrain.lifecycle import run_startup_command
-from marabrain.memory_tools import register_memory_tools
 from marabrain.server import create_server
 from marabrain.transient import ProcessAdmissionError
 
@@ -127,17 +126,11 @@ async def test_slot_remains_owned_until_cli_worker_join_completes(cli: Path, mon
     finished, release = threading.Event(), threading.Event()
     original = threading.Thread
     context = EngineContext.capture(max_transient_processes=2 if limited_by == "global" else 3)
-    server = FastMCP("join")
-    register_memory_tools(
-        server,
-        context=context,
-        command_timeout_seconds=0.2 if completion == "timeout" else 30,
-        domain_command_capacity=1 if limited_by == "domain" else None,
+    server = create_server(
+        Settings(command_timeout_seconds=0.2 if completion == "timeout" else 30, domain_command_capacity=1 if limited_by == "domain" else None), context=context
     )
     scope = anyio.CancelScope()
     script = (cli / "crystalline").read_text()
-    if completion == "timeout":
-        (cli / "crystalline").write_text(script.replace('if plan["hang"]:', 'import signal\nsignal.pause()\nif plan["hang"]:'))
 
     class GatedWorker(original):
         """Retain a finished CLI worker at a deterministic join barrier."""
@@ -149,17 +142,23 @@ async def test_slot_remains_owned_until_cli_worker_join_completes(cli: Path, mon
                 finished.set()
                 release.wait()
 
-    monkeypatch.setattr("marabrain.crystalline.threading.Thread", GatedWorker)
     async with Client(server) as client:
+        await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "ready", "domains": ["notes"]})
+        (cli / "calls.jsonl").unlink()
+        if completion == "timeout":
+            (cli / "crystalline").write_text(script.replace('if plan["hang"]:', 'import signal\nsignal.pause()\nif plan["hang"]:'))
+        monkeypatch.setattr("marabrain.crystalline.threading.Thread", GatedWorker)
 
         async def request() -> None:
             """Own a real child through its artificial worker termination barrier."""
             with scope:
                 if completion == "timeout":
                     with pytest.raises(ToolError, match="may or may not have been applied"):
-                        await client.call_tool("read_memory", {"domain": "notes", "permalink": "one"})
+                        await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "one"})
                 else:
-                    assert (await client.call_tool("read_memory", {"domain": "notes", "permalink": "one"})).structured_content == RECEIPT
+                    assert (
+                        await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "one"})
+                    ).structured_content == RECEIPT
 
         with anyio.fail_after(10):
             async with anyio.create_task_group() as tasks:
@@ -176,12 +175,12 @@ async def test_slot_remains_owned_until_cli_worker_join_completes(cli: Path, mon
                         await anyio.lowlevel.checkpoint()
                     error = "domain command capacity" if limited_by == "domain" else "transient process capacity"
                     with pytest.raises(ToolError, match=error):
-                        await client.call_tool("delete_memory", {"domain": "notes", "permalink": "one"})
+                        await client.call_tool("delete_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "one"})
                     assert len(calls(cli)) == 1
                 finally:
                     release.set()
         (cli / "crystalline").write_text(script)
-        assert (await client.call_tool("read_memory", {"domain": "notes", "permalink": "one"})).structured_content == RECEIPT
+        assert (await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "one"})).structured_content == RECEIPT
     assert not [worker for worker in threading.enumerate() if worker.name == "marabrain-cli"]
 
 
@@ -192,10 +191,12 @@ async def test_saturated_domain_keeps_health_and_other_domains_available(cli: Pa
     server = create_server(settings)
     monkeypatch.setenv("MARABRAIN_DOMAIN_COMMAND_CAPACITY", "9")
     async with command_barrier(cli) as (started, release), Client(server) as client:
+        await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "ready", "domains": ["notes"]})
+        (cli / "calls.jsonl").unlink()
 
         async def occupy() -> None:
             """Hold the limited domain without consuming all global data slots."""
-            assert (await client.call_tool("read_memory", {"domain": "notes", "permalink": "held"})).structured_content == RECEIPT
+            assert (await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "held"})).structured_content == RECEIPT
 
         with anyio.fail_after(10):
             async with anyio.create_task_group() as tasks:
@@ -203,10 +204,12 @@ async def test_saturated_domain_keeps_health_and_other_domains_available(cli: Pa
                 await started.receive()
                 try:
                     with pytest.raises(ToolError, match="domain command capacity is exhausted"):
-                        await client.call_tool("search_memories", {"query": "r", "domains": ["notes"]})
+                        await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "r", "domains": ["notes"]})
                     assert len(calls(cli)) == 1
                     assert (await client.call_tool("health")).structured_content == {"status": "ok", "version": "0.4.2"}
-                    assert (await client.call_tool("read_memory", {"domain": "other", "permalink": "one"})).structured_content == RECEIPT
+                    assert (
+                        await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "other", "permalink": "one"})
+                    ).structured_content == RECEIPT
                     assert len(calls(cli)) == 3
                 finally:
                     release.set()

@@ -1,29 +1,29 @@
 """Behavior tests for the Crystalline-backed memory tools at the subprocess and MCP boundaries."""
 
+import json
 import os
 import stat
 from pathlib import Path
 
 import anyio
 import pytest
-from fastmcp import Client, FastMCP
+from fastmcp import Client
 from fastmcp.exceptions import ToolError
-from memory_fake import NOISE, RECEIPT, call, calls, respond
+from memory_fake import NOISE, RECEIPT, WORKSPACE_ACTIVATION, WORKSPACE_ID, call, calls, respond
 from starlette.testclient import TestClient
 
 from marabrain import crystalline
 from marabrain.config import Settings
-from marabrain.memory_tools import register_memory_tools
 from marabrain.server import create_server
 
 
 def edit(operation: dict[str, object], **extra: object) -> dict[str, object]:
     """Build edit_memory arguments for a fixed memory and the given operation."""
-    return {"domain": "notes", "permalink": "team/plan", "operation": operation, **extra}
+    return {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "team/plan", "operation": operation, **extra}
 
 
-NOTE: dict[str, object] = {"domain": "notes", "title": "A title", "content": "Body\n- [x] ü"}
-TARGET: dict[str, object] = {"domain": "notes", "permalink": "team/plan"}
+NOTE: dict[str, object] = {"workspace_id": WORKSPACE_ID, "domain": "notes", "title": "A title", "content": "Body\n- [x] ü"}
+TARGET: dict[str, object] = {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "team/plan"}
 OPERATIONS = [
     pytest.param("create_memory", NOTE, ["write", "notes", "A title"], "Body\n- [x] ü", id="create"),
     pytest.param(
@@ -98,9 +98,9 @@ OPERATIONS = [
 
 @pytest.mark.parametrize("tool,arguments,argv,stdin", OPERATIONS)
 async def test_tool_runs_one_cli_command_and_returns_native_json(cli: Path, tool: str, arguments: dict[str, object], argv: list[str], stdin: str) -> None:
-    """Verify each tool maps its arguments to one exact argv and stdin and returns the upstream JSON object unchanged."""
+    """Verify first activation precedes one exact final command and the unchanged native response."""
     assert await call(tool, arguments) == RECEIPT
-    assert [(record["argv"], record["stdin"]) for record in calls(cli)] == [(["--json", *argv], stdin)]
+    assert [(row["argv"], row["stdin"]) for row in calls(cli)] == [*((command, "") for command in WORKSPACE_ACTIVATION), (["--json", *argv], stdin)]
 
 
 INVALID = [
@@ -159,19 +159,22 @@ async def test_cli_failures_yield_fixed_errors_and_no_retry(cli: Path, capfd: py
         await call("delete_memory", TARGET)
     assert message in str(error.value)
     assert NOISE not in str(error.value) + "".join(capfd.readouterr())
-    assert len(calls(cli)) == 1
+    assert [record["argv"] for record in calls(cli)] == [*WORKSPACE_ACTIVATION, ["--json", "delete", "team/plan", "notes", "--force"]]
 
 
 async def test_missing_executable_yields_unavailable_error(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify that an absent or unexecutable crystalline yields a fixed error."""
-    monkeypatch.setenv("PATH", str(cli))
-    (cli / "crystalline").chmod(stat.S_IRUSR | stat.S_IWUSR)
-    with pytest.raises(ToolError, match="unavailable"):
-        await call("read_memory", TARGET)
-    (cli / "crystalline").unlink()
-    monkeypatch.setenv("PATH", str(cli))
-    with pytest.raises(ToolError, match="unavailable"):
-        await call("read_memory", TARGET)
+    server = create_server(Settings())
+    async with Client(server) as client:
+        await client.call_tool("read_memory", TARGET)
+        monkeypatch.setenv("PATH", str(cli))
+        (cli / "crystalline").chmod(stat.S_IRUSR | stat.S_IWUSR)
+        with pytest.raises(ToolError, match="unavailable"):
+            await client.call_tool("read_memory", TARGET)
+        (cli / "crystalline").unlink()
+        monkeypatch.setenv("PATH", str(cli))
+        with pytest.raises(ToolError, match="unavailable"):
+            await client.call_tool("read_memory", TARGET)
 
 
 async def test_hanging_cli_is_killed_at_the_deadline(cli: Path) -> None:
@@ -186,21 +189,29 @@ async def test_hanging_cli_is_killed_at_the_deadline(cli: Path) -> None:
         os.kill(pid, 0)
 
 
-async def test_programmatic_server_capture_limits_are_independent_and_health_is_masked(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_programmatic_server_capture_limits_are_independent_and_health_is_masked(
+    cli: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
     """Keep standalone servers on their programmatic limits despite later environment changes."""
-    small = create_server(Settings(max_transient_processes=2, max_capture_bytes=8))
+    small = create_server(Settings(max_transient_processes=2, max_capture_bytes=128))
     large = create_server(Settings(max_transient_processes=3, max_capture_bytes=4096))
     monkeypatch.setenv("MARABRAIN_MAX_CAPTURE_BYTES", "1")
     monkeypatch.setenv("MARABRAIN_MAX_TRANSIENT_PROCESSES", "2")
     monkeypatch.setenv("PATH", str(cli / "absent"))
-    respond(cli, stdout='{"private":"secret-payload"}')
+    payload = {"private": "secret-payload" * 20}
+    respond(cli, stdout=json.dumps(payload))
     async with Client(small) as first, Client(large) as second:
         with pytest.raises(ToolError, match="capture limit"):
             await first.call_tool("delete_memory", TARGET)
-        assert (await second.call_tool("read_memory", TARGET)).structured_content == {"private": "secret-payload"}
+        assert (await second.call_tool("read_memory", TARGET)).structured_content == payload
+        script = (cli / "crystalline").read_text()
+        probe = "private-health-probe"
+        (cli / "crystalline").write_text(script.replace('if args == ["ctl", "status"]:', f'if args == ["ctl", "status"]:\n    print({probe!r} * 8)'))
         with pytest.raises(ToolError, match="daemon is not responding") as error:
             await first.call_tool("health", {})
         assert "capture limit" not in str(error.value) and "secret-payload" not in str(error.value)
+        assert probe not in str(error.value) + "".join(capfd.readouterr())
+        (cli / "crystalline").write_text(script)
         respond(cli, stdout="{}")
         assert (await first.call_tool("read_memory", TARGET)).structured_content == {}
 
@@ -212,8 +223,7 @@ async def test_programmatic_server_capture_limits_are_independent_and_health_is_
 @pytest.mark.parametrize("policy", [frozenset[str](), frozenset({"Notes"})])
 async def test_denied_domains_never_execute(cli: Path, tool: str, arguments: dict[str, object], policy: frozenset[str]) -> None:
     """Reject every single-domain operation before execution under an exact allowlist."""
-    server = FastMCP("test")
-    register_memory_tools(server, policy)
+    server = create_server(Settings(allowed_domains=tuple(policy)))
     async with Client(server) as client:
         with pytest.raises(ToolError, match="not permitted"):
             await client.call_tool(tool, arguments)
@@ -236,7 +246,8 @@ async def test_commands_without_content_do_not_inherit_server_stdin(cli: Path, t
     finally:
         os.dup2(saved_fd, 0)
         os.close(saved_fd)
-    assert [record["stdin"] for record in calls(cli)] == [""]
+    assert [record["argv"] for record in calls(cli)[:2]] == WORKSPACE_ACTIVATION
+    assert [record["stdin"] for record in calls(cli)] == ["", "", ""]
 
 
 async def test_tool_annotations_separate_reads_from_mutations(cli: Path) -> None:
@@ -266,4 +277,5 @@ def test_http_requires_authentication_before_any_memory_command(cli: Path, monke
         assert calls(cli) == []
         response = client.post("/mcp", headers=auth, json=payload)
     assert response.json()["result"]["structuredContent"] == RECEIPT
-    assert len(calls(cli)) == 1
+    expected = [*WORKSPACE_ACTIVATION, ["--json", "delete", "team/plan", "notes", "--force"]]
+    assert [(record["argv"], record["stdin"]) for record in calls(cli)] == [(command, "") for command in expected]

@@ -15,7 +15,7 @@ from anyio.streams.memory import MemoryObjectReceiveStream
 from anyio.streams.buffered import BufferedByteReceiveStream
 from fastmcp import Client
 from fastmcp.client.transports import ClientTransport
-from memory_fake import RECEIPT
+from memory_fake import RECEIPT, WORKSPACE_ID
 from pydantic import BaseModel, ConfigDict
 
 CAPTURE_BYTES: Final = 512
@@ -118,7 +118,7 @@ async def assert_overflow_reaped[T: ClientTransport](client: Client[T], probe: P
         marker.touch()
     try:
         async with anyio.create_task_group() as tasks:
-            arguments = {} if health else {"domain": "notes", "permalink": "overflow"}
+            arguments = {} if health else {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "overflow"}
             result = tasks.create_task(client.call_tool("health" if health else "read_memory", arguments, raise_on_error=False))
             child = await probe.started.receive()
             with anyio.fail_after(5):
@@ -130,7 +130,9 @@ async def assert_overflow_reaped[T: ClientTransport](client: Client[T], probe: P
                 assert len(probe.launches()) == before + 1
     finally:
         marker.unlink(missing_ok=True)
-    result = await client.call_tool("health" if health else "read_memory", {} if health else {"domain": "notes", "permalink": "after"})
+    result = await client.call_tool(
+        "health" if health else "read_memory", {} if health else {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "after"}
+    )
     assert result.structured_content == ({"status": "ok", "version": "0.4.2"} if health else RECEIPT)
     assert len(probe.launches()) == before + 2
 
@@ -140,17 +142,19 @@ async def assert_transport_process_policy[T: ClientTransport](client: Client[T],
     inventory = ["health", "create_memory", "read_memory", "edit_memory", "delete_memory", "search_memories"]
     assert [tool.name for tool in await client.list_tools()] == inventory
     async with anyio.create_task_group() as tasks:
-        held = tasks.create_task(client.call_tool("read_memory", {"domain": "notes", "permalink": "held"}))
+        held = tasks.create_task(client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "held"}))
         child = await probe.started.receive()
         try:
             before = probe.launches()
             with anyio.fail_after(1):
-                rejected = await client.call_tool("search_memories", {"query": "rejected", "domains": ["notes"]}, raise_on_error=False)
+                rejected = await client.call_tool(
+                    "search_memories", {"workspace_id": WORKSPACE_ID, "query": "rejected", "domains": ["notes"]}, raise_on_error=False
+                )
             assert rejected.is_error is True
             assert rejected.structured_content is None
             assert PRIVATE_OUTPUT not in str(rejected.content)
             with anyio.fail_after(1):
-                again = await client.call_tool("read_memory", {"domain": "notes", "permalink": "rejected"}, raise_on_error=False)
+                again = await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "rejected"}, raise_on_error=False)
             assert again.is_error is True
             assert again.structured_content is None
             assert PRIVATE_OUTPUT not in str(again.content)
@@ -162,7 +166,7 @@ async def assert_transport_process_policy[T: ClientTransport](client: Client[T],
             assert probe.launches()[-1].argv == ("ctl", "status")
             os.kill(child.pid, 0)
             if independent is not None:
-                result = await independent.call_tool("read_memory", {"domain": "notes", "permalink": "larger"})
+                result = await independent.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "larger"})
                 assert result.structured_content == RECEIPT
         finally:
             await child.connection.send(b"r")

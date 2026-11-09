@@ -13,7 +13,7 @@ import httpx
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 from fastmcp.exceptions import ToolError
-from memory_fake import NOISE, respond
+from memory_fake import NOISE, WORKSPACE_ID, respond
 
 from marabrain.crystalline import run_json
 
@@ -59,7 +59,9 @@ async def test_stdio_process_filters_logs_and_hides_arguments(cli: Path, tmp_pat
         log_file=log,
     )
     async with Client(transport, timeout=10) as client:
-        result = await client.call_tool("create_memory", {"domain": "notes", "title": "private-title", "content": "private-content"})
+        result = await client.call_tool(
+            "create_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "title": "private-title", "content": "private-content"}
+        )
         assert result.structured_content is not None
     output = log.read_text()
     assert ("crystalline.start" in output) is start
@@ -98,7 +100,10 @@ def test_http_process_emits_safe_debug_logs(cli: Path) -> None:
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {"name": "create_memory", "arguments": {"domain": "notes", "title": "private-title", "content": "private-content"}},
+                "params": {
+                    "name": "create_memory",
+                    "arguments": {"workspace_id": WORKSPACE_ID, "domain": "notes", "title": "private-title", "content": "private-content"},
+                },
             },
             timeout=10,
         )

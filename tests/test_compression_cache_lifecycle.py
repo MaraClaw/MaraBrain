@@ -1,6 +1,7 @@
 """Deterministic producer ownership, retirement, failure, and shutdown contracts."""
 
 from dataclasses import dataclass, field
+from functools import partial
 
 import anyio
 import pytest
@@ -59,7 +60,7 @@ async def test_identical_waiters_share_success_despite_one_cancellation(cancel_i
         """Return a cancellable waiter whose result is recorded only on success."""
         with anyio.CancelScope() as scope:
             task_status.started(scope)
-            results.append(await cache.get(domain, "p", "q", "content"))
+            results.append(await cache.get(domain, "p", "q", "content", workspace_id="test-workspace"))
 
     with anyio.fail_after(5):
         async with cache.lifespan(), anyio.create_task_group() as waiters:
@@ -81,12 +82,12 @@ async def test_disabled_cache_neither_reuses_nor_coalesces() -> None:
 
     with anyio.fail_after(5):
         async with cache.lifespan(), anyio.create_task_group() as waiters:
-            waiters.start_soon(cache.get, "notes", "p", "q", "content")
-            waiters.start_soon(cache.get, "notes", "p", "q", "content")
+            waiters.start_soon(partial(cache.get, workspace_id="test-workspace"), "notes", "p", "q", "content")
+            waiters.start_soon(partial(cache.get, workspace_id="test-workspace"), "notes", "p", "q", "content")
             await anyio.wait_all_tasks_blocked()
             assert provider.calls == 2
             provider.release.set()
-        await cache.get("notes", "p", "q", "content")
+        await cache.get("notes", "p", "q", "content", workspace_id="test-workspace")
     assert provider.calls == provider.cleaned == 3
 
 
@@ -101,12 +102,12 @@ async def test_last_waiter_drains_retirement_before_same_key_replacement() -> No
         """Signal caller completion only after its cancelled producer has drained."""
         with anyio.CancelScope() as scope:
             task_status.started(scope)
-            await cache.get("notes", "p", "q", "content")
+            await cache.get("notes", "p", "q", "content", workspace_id="test-workspace")
         stopped.set()
 
     async def replacement() -> None:
         """Request the same key while the original provider is retiring."""
-        results.append(await cache.get("notes", "p", "q", "content"))
+        results.append(await cache.get("notes", "p", "q", "content", workspace_id="test-workspace"))
 
     with anyio.fail_after(5):
         async with cache.lifespan(), anyio.create_task_group() as waiters:
@@ -128,7 +129,7 @@ async def test_last_waiter_drains_retirement_before_same_key_replacement() -> No
                 provider.release.set()
         assert results == ["context 2"]
         async with cache.lifespan():
-            assert await cache.get("notes", "p", "q", "content") == "context 3"
+            assert await cache.get("notes", "p", "q", "content", workspace_id="test-workspace") == "context 3"
     assert provider.calls == provider.cleaned == 3
 
 
@@ -142,7 +143,7 @@ async def test_expected_error_fans_out_without_cancelling_unrelated_work() -> No
     async def read(query: str) -> None:
         """Record expected failures at the waiter boundary."""
         try:
-            results.append(await cache.get("notes", "p", query, "content"))
+            results.append(await cache.get("notes", "p", query, "content", workspace_id="test-workspace"))
         except ToolError as error:
             errors.append(str(error))
 
@@ -156,7 +157,7 @@ async def test_expected_error_fans_out_without_cancelling_unrelated_work() -> No
                 provider.release.set()
             assert errors == ["LLM compression failed."] * 2 and len(results) == 1
             provider.fail = False
-            assert await cache.get("notes", "p", "bad", "content") == "context 3"
+            assert await cache.get("notes", "p", "bad", "content", workspace_id="test-workspace") == "context 3"
     assert provider.calls == provider.cleaned == 3
 
 
@@ -180,7 +181,7 @@ async def test_shutdown_drains_producer_cleanup_and_wakes_waiters(cancel_lifespa
     async def read() -> None:
         """Observe the failure of a request whose server is shutting down."""
         try:
-            await cache.get("notes", "p", "q", "content")
+            await cache.get("notes", "p", "q", "content", workspace_id="test-workspace")
         except ToolError as error:
             errors.append(str(error))
 

@@ -7,8 +7,10 @@ from pathlib import Path
 
 import pytest
 from fastmcp import Client
+from memory_fake import WORKSPACE_ID
 
 from marabrain.config import Settings
+from marabrain.engine_context import EngineContext
 from marabrain.server import create_server
 
 CONTEXT_CLI = '''
@@ -35,7 +37,7 @@ else:
 
 
 @pytest.mark.asyncio
-async def test_interleaved_health_and_all_memory_tools_keep_their_engine_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_interleaved_health_and_all_memory_tools_keep_their_engine_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workspace_root: Path) -> None:
     """Retain HOME fallbacks and explicit roots across ambient environment changes."""
     executable = tmp_path / "crystalline"
     executable.write_text(f"#!{sys.executable}\n" + CONTEXT_CLI)
@@ -45,20 +47,29 @@ async def test_interleaved_health_and_all_memory_tools_keep_their_engine_context
         monkeypatch.delenv(name, raising=False)
     first_home = tmp_path / "first"
     monkeypatch.setenv("HOME", str(first_home))
-    first = create_server(Settings())
+    first_root = workspace_root / "first"
+    first_settings = Settings(workspace_root=first_root)
+    first_context = EngineContext.for_application(first_settings)
+    first = create_server(first_settings, context=first_context)
+    first_workspace = first_context.for_workspace(WORKSPACE_ID, first_root)
     second_state = tmp_path / "second-state"
     selected = str(tmp_path / "second-config.yaml")
     monkeypatch.setenv("HOME", str(tmp_path / "second-home"))
     monkeypatch.setenv("XDG_STATE_HOME", str(second_state))
     monkeypatch.setenv("CRYSTALLINE_CONFIG", selected)
-    second = create_server(Settings())
+    second_root = workspace_root / "second"
+    second_settings = Settings(workspace_root=second_root)
+    second_context = EngineContext.for_application(second_settings)
+    second = create_server(second_settings, context=second_context)
+    second_workspace = second_context.for_workspace(WORKSPACE_ID, second_root)
     monkeypatch.setenv("HOME", str(tmp_path / "ambient"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "ambient-state"))
     monkeypatch.setenv("CRYSTALLINE_CONFIG", str(tmp_path / "ambient-config"))
     monkeypatch.setenv("PATH", str(tmp_path / "absent"))
     ambient = dict(os.environ)
-    first_state = first_home / ".local/state"
-    expected = ((first_state, str(first_home / ".config/crystalline/config.yaml")), (second_state, selected))
+    expected = tuple(
+        (context.state_home, str(Path(context.environment["XDG_CONFIG_HOME"]) / "crystalline/config.yaml")) for context in (first_workspace, second_workspace)
+    )
     async with Client(first) as first_client, Client(second) as second_client:
         for tool, arguments in (
             ("health", {}),
@@ -69,12 +80,16 @@ async def test_interleaved_health_and_all_memory_tools_keep_their_engine_context
             ("search_memories", {"query": "plan", "domains": ["notes"]}),
         ):
             for client, (state, config) in zip((first_client, second_client), expected, strict=True):
-                result = await client.call_tool(tool, arguments)
+                result = await client.call_tool(tool, arguments if tool == "health" else {"workspace_id": WORKSPACE_ID, **arguments})
                 assert result.structured_content == ({"status": "ok", "version": "0.4.2"} if tool == "health" else {"store": str(state), "config": config})
+        for client in (first_client, second_client):
+            assert (await client.call_tool("health", {})).structured_content == {"status": "ok", "version": "0.4.2"}
     for state, config in expected:
         commands = [json.loads(line) for line in (state / "engine-calls").read_text().splitlines()]
-        assert len(commands) == 7
+        assert len(commands) == 8
         assert all(command["config"] == config for command in commands)
         assert (state / "marabrain/domains.sqlite3").is_file()
     assert dict(os.environ) == ambient
     assert not (tmp_path / "ambient-state").exists()
+    assert not (first_home / ".local/state").exists()
+    assert not second_state.exists()
