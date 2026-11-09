@@ -1,5 +1,6 @@
 """End-to-end cancellation tests for memory command subprocesses."""
 
+import json
 import os
 import subprocess
 import sys
@@ -17,9 +18,10 @@ from marabrain.config import Settings
 from marabrain.crystalline import run_json
 from marabrain.domain_registry import DomainRegistry
 from marabrain.engine_context import EngineContext
+from marabrain.llm_config import LLMSettings
 from marabrain.memory_tools import register_memory_tools
 from marabrain.server import create_server
-from memory_fake import calls, respond
+from memory_fake import RECEIPT, calls, respond
 
 
 async def test_mcp_cancellation_reaps_running_command(cli: Path) -> None:
@@ -151,12 +153,15 @@ async def test_concurrent_servers_keep_independent_operation_budgets(cli: Path) 
         tasks.start_soon(request, slow, True)
 
 
-async def test_cancellation_during_launch_reaps_child_before_return(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("limited_by", ["global", "domain"])
+async def test_cancellation_during_launch_reaps_child_before_return(cli: Path, monkeypatch: pytest.MonkeyPatch, limited_by: str) -> None:
     """Cancel after OS creation but before the launch call returns without orphaning the child."""
     launched, release = threading.Event(), threading.Event()
     pids: list[int] = []
     original = subprocess.Popen
-    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=1024)
+    context = EngineContext.capture(max_transient_processes=2 if limited_by == "global" else 3, max_capture_bytes=1024)
+    server = FastMCP("launch")
+    register_memory_tools(server, context=context, domain_command_capacity=1 if limited_by == "domain" else None)
 
     class GatedLaunch(original[bytes]):
         """Pause delivery of a real child handle to exercise cancellation during launch."""
@@ -168,30 +173,70 @@ async def test_cancellation_during_launch_reaps_child_before_return(cli: Path, m
             launched.set()
             release.wait()
 
-    (cli / "crystalline").write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
+    (cli / "crystalline").write_text(f"#!{sys.executable}\nimport signal\nsignal.pause()\n")
     monkeypatch.setattr("marabrain.crystalline.subprocess.Popen", GatedLaunch)
     scope = anyio.CancelScope()
 
-    async def request() -> None:
-        """Run one command inside the externally cancellable request scope."""
-        with scope:
-            await run_json(["read", "note", "--domain=notes"], context=context)
+    async with Client(server) as client:
 
-    try:
+        async def request() -> None:
+            """Run one MCP command inside the externally cancellable request scope."""
+            with scope:
+                await client.call_tool("read_memory", {"domain": "notes", "permalink": "note"})
+
         with anyio.fail_after(10):
             async with anyio.create_task_group() as tasks:
                 tasks.start_soon(request)
-                await anyio.to_thread.run_sync(launched.wait)
-                with pytest.raises(ToolError, match="capacity is exhausted"):
-                    await run_json(["delete", "note", "notes", "--force"], context=context)
-                scope.cancel()
-                await anyio.lowlevel.checkpoint()
-                release.set()
-    finally:
-        release.set()
+                try:
+                    assert await anyio.to_thread.run_sync(launched.wait, 5)
+                    scope.cancel()
+                    await anyio.lowlevel.checkpoint()
+                    error = "domain command capacity" if limited_by == "domain" else "transient process capacity"
+                    with pytest.raises(ToolError, match=error):
+                        await client.call_tool("delete_memory", {"domain": "notes", "permalink": "note"})
+                    assert len(pids) == 1
+                finally:
+                    release.set()
     [pid] = pids
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
     assert not [worker for worker in threading.enumerate() if worker.name == "marabrain-cli"]
     (cli / "crystalline").write_text(f"#!{sys.executable}\nprint('{{}}')\n")
-    assert await run_json(["read"], context=context) == {}
+    async with Client(server) as client:
+        assert (await client.call_tool("read_memory", {"domain": "notes", "permalink": "note"})).structured_content == {}
+
+
+async def test_read_releases_domain_before_waiting_for_compression(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dispatch another same-domain command while an admitted read awaits its LLM phase."""
+    started, release = anyio.Event(), anyio.Event()
+    settings = LLMSettings.model_validate({"model": "model", "provider_url": "https://provider.test/v1"})
+    native = {"domain": "notes", "permalink": "note", "content": "source", "checksum": "checksum"}
+    respond(cli, stdout=json.dumps(native))
+
+    async def compress(settings: LLMSettings, query: str, content: str) -> str:
+        """Hold the downstream LLM at an event after native read cleanup has completed."""
+        assert query == "topic" and content == "source"
+        started.set()
+        await release.wait()
+        return "compressed"
+
+    monkeypatch.setattr("marabrain.memory_tools.compress_memory", compress)
+    server = FastMCP("compression")
+    register_memory_tools(server, llm_settings=settings, domain_command_capacity=1)
+    async with Client(server) as client:
+
+        async def request() -> None:
+            """Complete the original compressed request after a second command has dispatched."""
+            result = await client.call_tool("read_memory", {"domain": "notes", "permalink": "note", "compress": True, "query": "topic"})
+            assert result.structured_content == {**native, "content": "compressed", "compressed": True}
+
+        with anyio.fail_after(10):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(request)
+                await started.wait()
+                try:
+                    respond(cli)
+                    assert (await client.call_tool("search_memories", {"query": "topic", "domains": ["notes"]})).structured_content == RECEIPT
+                    assert len(calls(cli)) == 2
+                finally:
+                    release.set()

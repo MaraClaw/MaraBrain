@@ -3,7 +3,7 @@
 🦞 Second Brain For OpenClaw-backed Agents.
 
 Python MCP server named `marabrain-mcp`, built with FastMCP. The interface contains
-six tools and no resources or prompts. `health` returns `{"status": "ok", "version": "0.4.1"}`
+six tools and no resources or prompts. `health` returns `{"status": "ok", "version": "0.4.2"}`
 only after the [Crystalline](https://github.com/jordiboehme/crystalline) background engine
 answers `crystalline ctl status`. Missing executables, failed probes, and probes taking
 longer than the configured health deadline produce an MCP tool error instead of a successful response.
@@ -186,6 +186,7 @@ restarting the server.
 | `MARABRAIN_OPERATION_TIMEOUT_SECONDS` | unset (disabled) | Optional positive finite total budget for each memory operation's Crystalline phase in seconds; empty also disables it |
 | `MARABRAIN_MAX_TRANSIENT_PROCESSES` | unset (disabled) | Optional integer capacity of at least 2 for transient engine commands; empty also disables it |
 | `MARABRAIN_MAX_CAPTURE_BYTES` | unset (disabled) | Optional positive integer ceiling on raw stdout bytes per captured child; empty also disables it |
+| `MARABRAIN_DOMAIN_COMMAND_CAPACITY` | unset (disabled) | Optional positive integer final-command capacity applied independently to every resolved domain; empty also disables it |
 | `MARABRAIN_ENGINE_MODE` | `external` | `external` or `managed`; Docker's default command selects `managed` |
 | `MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS` | `30` | Positive finite managed engine readiness budget in seconds after daemon launch |
 
@@ -232,6 +233,24 @@ or embedding initialization across startup and serving. Saturated lanes fail
 immediately before launching a child or CLI worker; commands do not queue. Capacity
 remains occupied until the child is reaped and its worker finishes. Separate
 applications have independent capacity; persistent daemons and LLM calls are excluded.
+
+`MARABRAIN_DOMAIN_COMMAND_CAPACITY` adds per-domain admission for the final create,
+read, edit, delete, and search commands. For example, export
+`MARABRAIN_DOMAIN_COMMAND_CAPACITY=2` to give every resolved domain its own capacity
+of two commands. Aliases and case variants share their resolved domain's capacity.
+A search reserves one permit per distinct resolved domain atomically; if any domain
+is full, the whole search fails immediately without launching its final command.
+
+Domain capacities do not enlarge or replace the global data and reserved control
+lanes. Registry synchronization and registration remain outside domain quotas;
+a refused final create can therefore leave a newly registered domain in place.
+Permits remain occupied through child reaping and worker cleanup, including
+cancellation and timeout. A compressed read releases its command permit after
+source retrieval, before LLM work. Each application captures its own immutable
+policy and independent counters; restart to change the policy. These quotas do
+not provide filesystem or tenant isolation. Unset or empty disables them;
+malformed values, booleans, fractional values, and
+nonpositive capacities fail configuration validation.
 
 `MARABRAIN_MAX_CAPTURE_BYTES=S` limits raw stdout retained per captured child for
 memory, registry, status and embedding initialization commands. Exactly S bytes can
@@ -347,6 +366,8 @@ settings are separate from embedding settings; an embedding model cannot generat
 | `LLM_MAX_INPUT_TOKENS` | `256000` | Claude Agent SDK's assumed context window; OpenAI uses the selected model's context window |
 | `LLM_MAX_TOKENS` | `32768` | Maximum generated output tokens |
 | `LLM_TIMEOUT_SECONDS` | `60` | Provider request timeout in seconds |
+| `LLM_COMPRESSION_CACHE_MAX_ENTRIES` | unset (disabled) | Positive integer retained entry limit applied independently to every resolved domain; requires the byte limit |
+| `LLM_COMPRESSION_CACHE_MAX_BYTES` | unset (disabled) | Positive integer retained compressed UTF-8 payload limit applied independently to every resolved domain; requires the entry limit |
 
 For OpenAI, for example, set `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4.1-mini`,
 and `LLM_PROVIDER_URL=https://api.openai.com/v1`, then supply your `LLM_API_KEY`.
@@ -366,6 +387,34 @@ token check before dispatch. OpenAI-compatible Chat Completions has no equivalen
 request parameter, so the provider's model limit applies. `LLM_MAX_TOKENS` is a
 separate output budget; Claude's agent may make multiple requests to produce the
 structured result.
+
+To reuse compressed output, set, for example,
+`LLM_COMPRESSION_CACHE_MAX_ENTRIES=64` and `LLM_COMPRESSION_CACHE_MAX_BYTES=1048576`.
+Every resolved domain independently uses these same limits to cache output and
+coalesce matching concurrent provider requests. Every caller still resolves and
+authorizes its domain, reads the source,
+and validates its identity before reuse. A hit requires the same resolved domain,
+permalink, exact query, and full source content under the application's captured
+LLM settings. Each response uses that caller's fresh metadata and source checksum.
+Aliases share only their resolved domain's entries; plain reads and search remain
+unchanged. Leaving both limits unset or empty disables caching and coalescing.
+Otherwise both must be positive integers; a missing partner, malformed values,
+and nonpositive, boolean, or fractional limits fail validation.
+
+Each domain evicts least recently used entries to satisfy both limits. `LLM_COMPRESSION_CACHE_MAX_BYTES`
+bounds only retained compressed UTF-8 payload, excluding cache keys, object
+overhead, and in-flight provider data. Oversized results are returned without being
+cached; failures and cancelled work are never cached. Cancelling one caller leaves
+shared work available to remaining callers. When the last caller leaves or the
+server shuts down, owned work is cancelled and drained; cleanup can outlast the
+provider timeout and does not guarantee cancellation at the remote provider.
+Late callers do not reset that timeout, and failures never fall back to source content.
+
+Cached output and shared requests stay private to one application and resolved
+domain. Cached data is held in process memory, cleared on shutdown, and never
+persisted. Restart to apply policy changes. A cache miss still sends the full source
+content and query to the configured LLM provider; enabling caching does not change
+that disclosure or provide tenant isolation.
 
 The launcher exports and forwards every `LLM_*` variable listed above to both the
 configuration preflight and runtime container. Settings are parsed at startup; restart
@@ -389,6 +438,13 @@ corresponding total disabled in both containers.
 exported and forwarded identically to both containers, including sourced `.env`
 overrides. Both containers parse the same optional integer limits; empty or unset
 values disable them, and invalid values fail configuration preflight.
+
+`MARABRAIN_DOMAIN_COMMAND_CAPACITY`, `LLM_COMPRESSION_CACHE_MAX_ENTRIES`, and
+`LLM_COMPRESSION_CACHE_MAX_BYTES` are
+exported and forwarded identically to configuration preflight and runtime,
+including sourced `.env` overrides. Unset or empty capacity disables domain quotas;
+both cache limits unset or empty disables caching. Invalid scalar values or an
+incomplete cache pair fail preflight before runtime starts.
 
 When overriding `MARABRAIN_ALLOWED_HOSTS`, retain `127.0.0.1` alongside your
 public hostname so the container's internal healthcheck remains authorized.

@@ -9,8 +9,10 @@ from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
 
 from marabrain.compression import compress_memory
+from marabrain.compression_cache import CompressionCache
 from marabrain.crystalline import JsonObject, run_json
 from marabrain.deadlines import deadline_after
+from marabrain.domain_admission import DomainCommandAdmission
 from marabrain.domain_registry import DomainRegistry
 from marabrain.engine_context import EngineContext
 from marabrain.llm_config import LLMSettings
@@ -74,11 +76,14 @@ def register_memory_tools(
     llm_settings: LLMSettings | None = None,
     context: EngineContext | None = None,
     operation_timeout_seconds: float | None = None,
+    domain_command_capacity: int | None = None,
+    compression_cache: CompressionCache | None = None,
 ) -> None:
     """Register the five Crystalline-backed memory tools on the server."""
 
     captured = context if context is not None else EngineContext.capture()
     registry = DomainRegistry.from_environment(command_timeout_seconds, allowed_domains, context=captured)
+    admission = DomainCommandAdmission(domain_command_capacity)
 
     @server.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
     async def create_memory(
@@ -92,7 +97,8 @@ def register_memory_tools(
             *([] if folder is None else [f"--folder={folder}"]),
             *([] if metadata is None else ["--metadata", json.dumps(metadata, allow_nan=False)]),
         ]
-        return await run_json(["write", resolved, title, *options], content, command_timeout_seconds, context=captured, deadline=deadline)
+        with admission.admit([resolved]):
+            return await run_json(["write", resolved, title, *options], content, command_timeout_seconds, context=captured, deadline=deadline)
 
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True})
     async def read_memory(domain: Domain, permalink: Permalink, ctx: Context, compress: bool = False, query: Query | None = None) -> JsonObject:
@@ -106,7 +112,8 @@ def register_memory_tools(
             raise ToolError("A query is required when read compression is enabled.")
         deadline = deadline_after(operation_timeout_seconds)
         (resolved,) = await registry.resolve([domain], deadline=deadline)
-        result = await run_json(["read", permalink, f"--domain={resolved}"], timeout_seconds=command_timeout_seconds, context=captured, deadline=deadline)
+        with admission.admit([resolved]):
+            result = await run_json(["read", permalink, f"--domain={resolved}"], timeout_seconds=command_timeout_seconds, context=captured, deadline=deadline)
         if compress and query is not None:
             settings = llm_settings if llm_settings is not None else LLMSettings()
             settings.require_configured()
@@ -128,7 +135,10 @@ def register_memory_tools(
             async with anyio.create_task_group() as tasks:
                 tasks.start_soon(report_wait)
                 try:
-                    compression = await compress_memory(settings, query, memory.content)
+                    if compression_cache is None:
+                        compression = await compress_memory(settings, query, memory.content)
+                    else:
+                        compression = await compression_cache.get(resolved, permalink, query, memory.content)
                 except ToolError as error:
                     compression = error
                 finally:
@@ -146,16 +156,18 @@ def register_memory_tools(
         (resolved,) = await registry.resolve([domain], deadline=deadline)
         checksum = [] if expected_checksum is None else [f"--expected-checksum={expected_checksum}"]
         name, *flags = _edit_arguments(operation)
-        return await run_json(
-            ["edit", permalink, resolved, name, *flags, *checksum], operation.content, command_timeout_seconds, context=captured, deadline=deadline
-        )
+        with admission.admit([resolved]):
+            return await run_json(
+                ["edit", permalink, resolved, name, *flags, *checksum], operation.content, command_timeout_seconds, context=captured, deadline=deadline
+            )
 
     @server.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})
     async def delete_memory(domain: Domain, permalink: Permalink) -> JsonObject:
         """Permanently delete one memory without confirmation or checksum protection."""
         deadline = deadline_after(operation_timeout_seconds)
         (resolved,) = await registry.resolve([domain], deadline=deadline)
-        return await run_json(["delete", permalink, resolved, "--force"], timeout_seconds=command_timeout_seconds, context=captured, deadline=deadline)
+        with admission.admit([resolved]):
+            return await run_json(["delete", permalink, resolved, "--force"], timeout_seconds=command_timeout_seconds, context=captured, deadline=deadline)
 
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False})
     async def search_memories(query: Query, domains: Domains, tags: Tags | None = None, limit: Limit = 10, page: Page = 1) -> JsonObject:
@@ -163,6 +175,7 @@ def register_memory_tools(
         deadline = deadline_after(operation_timeout_seconds)
         resolved = await registry.resolve(domains, deadline=deadline)
         filters = [*(f"--domain={domain}" for domain in resolved), *(f"--tag={tag}" for tag in tags or [])]
-        return await run_json(
-            ["search", *filters, f"--limit={limit}", f"--page={page}", query], timeout_seconds=command_timeout_seconds, context=captured, deadline=deadline
-        )
+        with admission.admit(resolved):
+            return await run_json(
+                ["search", *filters, f"--limit={limit}", f"--page={page}", query], timeout_seconds=command_timeout_seconds, context=captured, deadline=deadline
+            )

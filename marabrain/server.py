@@ -1,11 +1,12 @@
 """MaraBrain MCP server construction and transport startup."""
 
+import asyncio
 import logging
 import secrets
 import sys
 from collections import deque
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, contextmanager
 from typing import Literal, assert_never
 
 import anyio
@@ -17,7 +18,8 @@ from fastmcp.server.context import reset_transport, set_transport
 from mcp.server.stdio import stdio_server
 from pydantic import BaseModel, ConfigDict, SecretStr
 
-from marabrain import __version__
+from marabrain import __version__, memory_tools
+from marabrain.compression_cache import CompressionCache
 from marabrain.config import Settings, Transport
 from marabrain.domain_registry import DomainRegistry
 from marabrain.engine_context import EngineContext
@@ -33,7 +35,7 @@ class HealthResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     status: Literal["ok"] = "ok"
-    version: Literal["0.4.1"] = __version__
+    version: Literal["0.4.2"] = __version__
 
 
 class BearerVerifier(TokenVerifier):
@@ -55,7 +57,37 @@ def create_server(settings: Settings, *, context: EngineContext | None = None) -
     """Construct the MCP server with its health and memory tools and configured authentication."""
     bound_context = context if context is not None else EngineContext.for_application(settings)
     auth = BearerVerifier(settings.bearer_secret) if settings.transport == Transport.HTTP and settings.bearer_secret is not None else None
-    server = FastMCP("marabrain-mcp", version=__version__, auth=auth, mask_error_details=True, strict_input_validation=True, tasks=False)
+    cache = CompressionCache(settings.llm, compressor=memory_tools.compress_memory)
+
+    @asynccontextmanager
+    async def lifespan(server: FastMCP) -> AsyncGenerator[None]:
+        """Own compression producers and retained payloads for either MCP transport."""
+        ready, stopped, finished = anyio.Event(), anyio.Event(), anyio.Event()
+
+        async def supervise() -> None:
+            """Keep the cache's cancel scopes in one task despite FastMCP's teardown shield."""
+            try:
+                async with cache.lifespan():
+                    ready.set()
+                    await stopped.wait()
+            finally:
+                ready.set()
+                finished.set()
+
+        # FastMCP adds an inner cancel scope during teardown; this task owns both group exits.
+        supervisor = asyncio.create_task(supervise(), name="marabrain-compression-lifespan")
+        try:
+            await ready.wait()
+            if supervisor.done():
+                supervisor.result()
+            yield
+        finally:
+            stopped.set()
+            with anyio.CancelScope(shield=True):
+                await finished.wait()
+            supervisor.result()
+
+    server = FastMCP("marabrain-mcp", version=__version__, auth=auth, mask_error_details=True, strict_input_validation=True, tasks=False, lifespan=lifespan)
     health_timeout = settings.health_timeout_seconds
     policy = None if settings.allowed_domains is None else frozenset(settings.allowed_domains)
 
@@ -77,6 +109,8 @@ def create_server(settings: Settings, *, context: EngineContext | None = None) -
         llm_settings=settings.llm,
         context=bound_context,
         operation_timeout_seconds=settings.operation_timeout_seconds,
+        domain_command_capacity=settings.domain_command_capacity,
+        compression_cache=cache,
     )
     return server
 

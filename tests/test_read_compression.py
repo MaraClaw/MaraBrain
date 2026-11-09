@@ -20,6 +20,7 @@ from marabrain.server import create_server
 from marabrain.llm_config import LLMSettings
 from marabrain.memory_tools import register_memory_tools
 from marabrain.compression import compress_memory
+from marabrain.domain_registry import DomainRegistry
 
 MEMORY: JsonObject = {"domain": "notes", "permalink": "team/plan", "content": "# Retries\nRetry at most twice.\n# Lunch\nPizza.", "checksum": "abc"}
 TARGET = {"domain": "notes", "permalink": "team/plan"}
@@ -147,3 +148,115 @@ async def test_compression_keeps_its_own_budget_after_engine_deadline(cli: Path,
         response = await client.call_tool("read_memory", {**TARGET, "query": "retry", "compress": True})
     assert response.structured_content == {**MEMORY, "content": "result", "compressed": True}
     assert len(provider.requests) == 1
+
+
+async def test_cache_hit_reads_and_validates_fresh_source_metadata(cli: Path, provider: Provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reuse only compressed text while preserving each read's fresh native envelope."""
+    configure(monkeypatch, provider)
+    monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_ENTRIES", "4")
+    monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_BYTES", "1024")
+    respond(cli, json.dumps(MEMORY))
+    async with Client(create_server(Settings())) as client:
+        arguments = {**TARGET, "query": "retry", "compress": True}
+        await client.call_tool("read_memory", arguments)
+        fresh = {**MEMORY, "checksum": "new-checksum", "links": ["new-link"], "title": "New title"}
+        respond(cli, json.dumps(fresh))
+        result = (await client.call_tool("read_memory", arguments)).structured_content
+        assert result == {**fresh, "content": "result", "compressed": True}
+        respond(cli, json.dumps({**MEMORY, "domain": "private"}))
+        with pytest.raises(ToolError, match="different memory"):
+            await client.call_tool("read_memory", arguments)
+    assert len(provider.requests) == 1
+    assert [record["argv"] for record in calls(cli)] == [["--json", "read", "team/plan", "--domain=notes"]] * 3
+
+
+@pytest.mark.parametrize("change", ["query", "permalink", "content", "domain", "application"])
+async def test_cache_reuse_requires_complete_identity(cli: Path, provider: Provider, monkeypatch: pytest.MonkeyPatch, change: str) -> None:
+    """Dispatch a distinct provider request when any reuse identity component changes."""
+    configure(monkeypatch, provider)
+    monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_ENTRIES", "4")
+    monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_BYTES", "1024")
+    (cli / "domains.json").write_text(json.dumps([{"name": "notes"}, {"name": "other"}]))
+    await DomainRegistry.from_environment(5).synchronize()
+    respond(cli, json.dumps(MEMORY))
+    arguments = {**TARGET, "query": "retry", "compress": True}
+    server = create_server(Settings())
+    async with Client(server) as client:
+        await client.call_tool("read_memory", arguments)
+        next_arguments = dict(arguments)
+        source = dict(MEMORY)
+        if change in {"domain", "permalink", "query"}:
+            next_arguments[change] = "other"
+            if change != "query":
+                source[change] = "other"
+        if change == "content":
+            source["content"] = "Changed source with unchanged native checksum."
+        respond(cli, json.dumps(source))
+        if change == "application":
+            async with Client(create_server(Settings())) as other:
+                await other.call_tool("read_memory", next_arguments)
+        else:
+            await client.call_tool("read_memory", next_arguments)
+    assert len(provider.requests) == 2
+
+
+async def test_cache_aliases_share_only_the_resolved_domain(cli: Path, provider: Provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Map aliases and case variants to the exact domain's cache after fresh admission."""
+    configure(monkeypatch, provider)
+    monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_ENTRIES", "4")
+    monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_BYTES", "1024")
+    (cli / "domains.json").write_text(json.dumps([{"name": "Legacy", "canonical_name": "canonical", "aliases": ["alias"]}]))
+    await DomainRegistry.from_environment(5).synchronize()
+    source = {**MEMORY, "domain": "Legacy"}
+    respond(cli, json.dumps(source))
+    async with Client(create_server(Settings())) as client:
+        for domain in ("Legacy", "LEGACY", "canonical", "ALIAS"):
+            result = await client.call_tool("read_memory", {**TARGET, "domain": domain, "query": "retry", "compress": True})
+            assert result.structured_content == {**source, "content": "result", "compressed": True}
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.parametrize("limit", [None, ""])
+async def test_disabled_cache_does_not_reuse_compression(cli: Path, provider: Provider, monkeypatch: pytest.MonkeyPatch, limit: str | None) -> None:
+    """Preserve separate provider requests when both cache limits are unset or empty."""
+    configure(monkeypatch, provider)
+    if limit is not None:
+        monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_ENTRIES", limit)
+        monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_BYTES", limit)
+    respond(cli, json.dumps(MEMORY))
+    async with Client(create_server(Settings())) as client:
+        for _ in range(2):
+            await client.call_tool("read_memory", {**TARGET, "query": "retry", "compress": True})
+    assert len(provider.requests) == 2
+
+
+@pytest.mark.parametrize("entries,byte_limit,queries,expected", [(2, 100, ["a", "b", "a", "c", "b"], 4), (4, 11, ["a", "b", "a"], 3), (4, 5, ["a", "a"], 2)])
+async def test_cache_lru_enforces_entry_and_payload_byte_limits(
+    cli: Path, provider: Provider, monkeypatch: pytest.MonkeyPatch, entries: int, byte_limit: int, queries: list[str], expected: int
+) -> None:
+    """Evict least recent payloads under either limit and bypass oversized results."""
+    configure(monkeypatch, provider)
+    monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_ENTRIES", str(entries))
+    monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_BYTES", str(byte_limit))
+    respond(cli, json.dumps(MEMORY))
+    async with Client(create_server(Settings())) as client:
+        for query in queries:
+            await client.call_tool("read_memory", {**TARGET, "query": query, "compress": True})
+    assert len(provider.requests) == expected
+
+
+async def test_cache_provider_failure_recovers_without_fallback(cli: Path, provider: Provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never cache a provider error and allow a later successful request to populate reuse."""
+    configure(monkeypatch, provider)
+    monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_ENTRIES", "4")
+    monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_BYTES", "1024")
+    respond(cli, json.dumps(MEMORY))
+    async with Client(create_server(Settings())) as client:
+        arguments = {**TARGET, "query": "retry", "compress": True}
+        provider.status = 500
+        with pytest.raises(ToolError, match="LLM compression failed"):
+            await client.call_tool("read_memory", arguments)
+        provider.status = 200
+        assert (await client.call_tool("read_memory", arguments)).structured_content == {**MEMORY, "content": "result", "compressed": True}
+        await client.call_tool("read_memory", arguments)
+    assert len(provider.requests) == 2

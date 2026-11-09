@@ -6,10 +6,12 @@ import anyio
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
-from memory_fake import RECEIPT, call, calls
+from memory_fake import RECEIPT, call, calls, respond
 from starlette.testclient import TestClient
+from test_domain_resolution import command_barrier
 
 from marabrain.config import Settings
+from marabrain.engine_context import EngineContext
 from marabrain.memory_tools import register_memory_tools
 from marabrain.server import create_server
 
@@ -107,6 +109,119 @@ async def test_concurrent_servers_keep_independent_policies(cli: Path) -> None:
         group.start_soon(request, allowed, True)
         group.start_soon(request, denied, False)
     assert len(calls(cli)) == 1
+
+
+@pytest.mark.parametrize("domains", [["other", "NOTES"], ["notes", "other"], ["other", "notes", "OTHER"]])
+async def test_search_domain_admission_is_atomic_and_deduplicated(cli: Path, domains: list[str]) -> None:
+    """Reject a mixed saturated search without consuming another domain's available permit."""
+    server = FastMCP("atomic")
+    register_memory_tools(server, context=EngineContext.capture(max_transient_processes=4), domain_command_capacity=1)
+    async with command_barrier(cli) as (started, release), Client(server) as client:
+
+        async def occupy() -> None:
+            """Hold notes while another domain remains dispatchable."""
+            await client.call_tool("read_memory", {"domain": "notes", "permalink": "held"})
+
+        with anyio.fail_after(10):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(occupy)
+                await started.receive()
+                try:
+                    with pytest.raises(ToolError, match="domain command capacity is exhausted"):
+                        await client.call_tool("search_memories", {"query": "r", "domains": domains})
+                    assert len(calls(cli)) == 1
+                    result = await client.call_tool("search_memories", {"query": "r", "domains": ["other", "OTHER", "additional"]})
+                    assert result.structured_content == RECEIPT
+                    assert len(calls(cli)) == 2
+                finally:
+                    release.set()
+        assert (await client.call_tool("search_memories", {"query": "r", "domains": ["notes", "NOTES", "other"]})).structured_content == RECEIPT
+
+
+@pytest.mark.parametrize("capacity", [1, 2])
+@pytest.mark.parametrize("domain", ["notes", "other"])
+async def test_domain_command_counters_are_application_local(cli: Path, capacity: int, domain: str) -> None:
+    """Apply the uniform capacity to every domain with independent application counters."""
+    first, second = FastMCP("first"), FastMCP("second")
+    for server in (first, second):
+        register_memory_tools(server, domain_command_capacity=capacity)
+    async with command_barrier(cli) as (started, release), Client(first) as client, Client(second) as other:
+
+        async def occupy() -> None:
+            """Hold only the first application's quota."""
+            await client.call_tool("read_memory", {"domain": domain, "permalink": "held"})
+
+        with anyio.fail_after(10):
+            async with anyio.create_task_group() as tasks:
+                for _ in range(capacity):
+                    tasks.start_soon(occupy)
+                for _ in range(capacity):
+                    await started.receive()
+                try:
+                    arguments = {"query": "r", "domains": [domain]}
+                    assert (await other.call_tool("search_memories", arguments)).structured_content == RECEIPT
+                    with pytest.raises(ToolError, match="domain command capacity is exhausted"):
+                        await client.call_tool("search_memories", arguments)
+                    assert len(calls(cli)) == capacity + 1
+                finally:
+                    release.set()
+
+
+@pytest.mark.parametrize("value", [None, ""])
+async def test_disabled_domain_command_capacity_allows_same_domain_overlap(cli: Path, monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
+    """Allow overlapping same-domain commands when the scalar limit is absent or empty."""
+    monkeypatch.delenv("MARABRAIN_DOMAIN_COMMAND_CAPACITY", raising=False)
+    if value is not None:
+        monkeypatch.setenv("MARABRAIN_DOMAIN_COMMAND_CAPACITY", value)
+    server = create_server(Settings(max_transient_processes=4))
+    async with command_barrier(cli) as (started, release), Client(server) as client:
+
+        async def occupy() -> None:
+            """Hold a same-domain command while another command is admitted."""
+            assert (await client.call_tool("read_memory", {"domain": "notes", "permalink": "held"})).structured_content == RECEIPT
+
+        with anyio.fail_after(10):
+            async with anyio.create_task_group() as tasks:
+                for _ in range(2):
+                    tasks.start_soon(occupy)
+                for _ in range(2):
+                    await started.receive()
+                try:
+                    assert (await client.call_tool("search_memories", BASE)).structured_content == RECEIPT
+                    assert len(calls(cli)) == 3
+                finally:
+                    release.set()
+
+
+@pytest.mark.parametrize("failure", ["global", "unavailable", "exit", "malformed", "capture"])
+async def test_failed_search_releases_every_domain_reservation(cli: Path, failure: str) -> None:
+    """Release the entire domain set after global refusal or native command failures."""
+    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=256)
+    server = FastMCP("failures")
+    register_memory_tools(server, context=context, domain_command_capacity=1)
+    arguments = {"query": "r", "domains": ["notes", "other"]}
+    executable = cli / "crystalline"
+    original = executable.read_text()
+    async with Client(server) as client:
+        if failure == "global":
+            with context.transients.admit(), pytest.raises(ToolError, match="transient process capacity"):
+                await client.call_tool("search_memories", arguments)
+            assert calls(cli) == []
+        else:
+            if failure == "unavailable":
+                executable.unlink()
+            elif failure == "exit":
+                respond(cli, exit_code=8)
+            elif failure == "malformed":
+                respond(cli, stdout="secret non-json")
+            else:
+                respond(cli, stdout="x" * 257)
+            with pytest.raises(ToolError):
+                await client.call_tool("search_memories", arguments)
+            executable.write_text(original)
+            executable.chmod(0o755)
+            respond(cli)
+        assert (await client.call_tool("search_memories", arguments)).structured_content == RECEIPT
 
 
 def test_http_servers_keep_independent_policies(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:

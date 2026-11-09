@@ -55,8 +55,9 @@ async def compress_memory(settings: LLMSettings, query: str, content: str) -> st
             match settings.provider:
                 case LLMProvider.OPENAI:
                     key = settings.api_key.get_secret_value() if settings.api_key else ""
-                    async with httpx2.AsyncClient(follow_redirects=False, timeout=settings.timeout_seconds) as http:
-                        async with openai.AsyncOpenAI(
+                    http = httpx2.AsyncClient(follow_redirects=False, timeout=settings.timeout_seconds)
+                    try:
+                        client = openai.AsyncOpenAI(
                             api_key=key,
                             admin_api_key="",
                             organization="",
@@ -68,7 +69,8 @@ async def compress_memory(settings: LLMSettings, query: str, content: str) -> st
                             timeout=settings.timeout_seconds,
                             http_client=http,
                             default_headers={"Authorization": f"Bearer {key}"},
-                        ) as client:
+                        )
+                        try:
                             response = await client.chat.completions.parse(
                                 model=settings.model,
                                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": data}],
@@ -78,6 +80,13 @@ async def compress_memory(settings: LLMSettings, query: str, content: str) -> st
                                 reasoning_effort=settings.reasoning_effort if settings.reasoning_effort is not None else openai.omit,
                                 extra_headers={"Authorization": openai.omit} if not key else None,
                             )
+                        finally:
+                            with anyio.CancelScope(shield=True):
+                                await client.close()
+                    finally:
+                        with anyio.CancelScope(shield=True):
+                            await http.aclose()
+                    await anyio.lowlevel.checkpoint_if_cancelled()
                     if len(response.choices) != 1:
                         raise ToolError("LLM compression failed.")
                     choice = response.choices[0]
@@ -125,6 +134,7 @@ async def compress_memory(settings: LLMSettings, query: str, content: str) -> st
                         finally:
                             with anyio.CancelScope(shield=True):
                                 await client.disconnect()
+                        await anyio.lowlevel.checkpoint_if_cancelled()
                         if result is None or result.is_error or result.subtype != "success":
                             raise ToolError("LLM compression failed.")
                         return CompressionResult.model_validate(result.structured_output).context

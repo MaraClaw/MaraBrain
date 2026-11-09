@@ -1,7 +1,7 @@
 """Test server configuration snapshots and validation."""
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from marabrain.config import EngineMode, Settings
 
@@ -10,12 +10,15 @@ def test_settings_capture_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify configuration snapshots retain their own parsed values."""
     monkeypatch.setenv("MARABRAIN_ALLOWED_DOMAINS", '["Notes", "other"]')
     monkeypatch.setenv("MARABRAIN_ENGINE_MODE", "managed")
+    monkeypatch.setenv("MARABRAIN_DOMAIN_COMMAND_CAPACITY", "2")
     first = Settings()
     monkeypatch.setenv("MARABRAIN_ALLOWED_DOMAINS", "[]")
+    monkeypatch.setenv("MARABRAIN_DOMAIN_COMMAND_CAPACITY", "1")
     second = Settings()
     assert first.allowed_domains == ("Notes", "other")
     assert second.allowed_domains == ()
     assert first.engine_mode is EngineMode.MANAGED
+    assert (first.domain_command_capacity, second.domain_command_capacity) == (2, 1)
     monkeypatch.delenv("MARABRAIN_ALLOWED_DOMAINS")
     defaults = Settings()
     assert defaults.allowed_domains is None
@@ -104,3 +107,62 @@ def test_bad_domains_rejected(monkeypatch: pytest.MonkeyPatch, value: str) -> No
     monkeypatch.setenv("MARABRAIN_ALLOWED_DOMAINS", value)
     with pytest.raises(ValidationError):
         Settings()
+
+
+@pytest.mark.parametrize("value,expected", [(None, None), ("", None), ("1", 1), ("2", 2), ("65536", 65536)])
+def test_domain_command_capacity_parses_optional_integer(monkeypatch: pytest.MonkeyPatch, value: str | None, expected: int | None) -> None:
+    """Parse one positive capacity while leaving absent or empty values disabled."""
+    monkeypatch.delenv("MARABRAIN_DOMAIN_COMMAND_CAPACITY", raising=False)
+    if value is not None:
+        monkeypatch.setenv("MARABRAIN_DOMAIN_COMMAND_CAPACITY", value)
+    assert Settings().domain_command_capacity == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "invalid-secret",
+        " ",
+        "{}",
+        "[]",
+        "null",
+        "true",
+        "false",
+        "1.5",
+        "1.0",
+        "1e2",
+        "0",
+        "-1",
+        "nan",
+        "inf",
+        '"2"',
+        '{"private-secret": 2}',
+    ],
+)
+def test_domain_command_capacity_rejects_redacted_environment_values(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    """Reject malformed or nonpositive scalars without exposing rejected input."""
+    monkeypatch.setenv("MARABRAIN_DOMAIN_COMMAND_CAPACITY", value)
+    with pytest.raises(ValidationError) as invalid:
+        Settings()
+    assert "private-secret" not in str(invalid.value)
+    assert "invalid-secret" not in str(invalid.value)
+    assert "input_value" not in str(invalid.value)
+    assert invalid.value.errors()[0]["loc"] == ("domain_command_capacity",)
+
+
+@pytest.mark.parametrize("value", [True, False, 2.5, 1.0, 0, -1, {"notes": 2}, [], "invalid-secret"])
+def test_domain_command_capacity_rejects_invalid_constructor_values(value: JsonValue) -> None:
+    """Reject boolean and float coercion as well as invalid scalar constructor values."""
+    with pytest.raises(ValidationError) as invalid:
+        Settings.model_validate({"domain_command_capacity": value})
+    assert invalid.value.errors()[0]["loc"] == ("domain_command_capacity",)
+    assert "input_value" not in str(invalid.value)
+
+
+def test_domain_command_capacity_is_frozen() -> None:
+    """Keep a validated scalar policy immutable after settings construction."""
+    settings = Settings(domain_command_capacity=2)
+    with pytest.raises(ValidationError) as invalid:
+        setattr(settings, "domain_command_capacity", 3)
+    assert invalid.value.errors()[0]["type"] == "frozen_instance"
+    assert settings.domain_command_capacity == 2

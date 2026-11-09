@@ -8,7 +8,10 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import anyio
+import httpx2
 import pytest
+from anyio.abc import TaskStatus
 from fastmcp.exceptions import ToolError
 from pydantic import AnyHttpUrl, SecretStr, TypeAdapter, ValidationError
 
@@ -216,3 +219,49 @@ async def test_default_options_are_omitted(provider: Provider) -> None:
     assert await compress_memory(settings, "q", "c") == "result"
     payload = provider.requests[0][2]
     assert "reasoning_effort" not in payload and "temperature" not in payload
+
+
+async def test_openai_cancellation_drains_local_client_closure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Complete awaited local HTTP closure before a cancelled provider request returns."""
+    requested, closing, release, closed, stopped = (anyio.Event() for _ in range(5))
+
+    async def handle(request: httpx2.Request) -> httpx2.Response:
+        """Hold a real SDK request at the HTTP transport boundary until cancellation."""
+        requested.set()
+        await anyio.sleep_forever()
+        raise AssertionError("Provider request unexpectedly resumed")
+
+    class Client(httpx2.AsyncClient):
+        """Expose a cleanup barrier while retaining the real SDK HTTP client contract."""
+
+        def __init__(self, *, follow_redirects: bool, timeout: float) -> None:
+            """Install the controlled transport for this provider client."""
+            super().__init__(transport=httpx2.MockTransport(handle), follow_redirects=follow_redirects, timeout=timeout)
+
+        async def aclose(self) -> None:
+            """Require an awaited checkpoint before the HTTP resource can close."""
+            closing.set()
+            await release.wait()
+            await super().aclose()
+            closed.set()
+
+    async def read(*, task_status: TaskStatus[anyio.CancelScope]) -> None:
+        """Expose cancellation without bypassing provider cleanup."""
+        with anyio.CancelScope() as scope:
+            task_status.started(scope)
+            await compress_memory(LLMSettings(model="m", provider_url=AnyHttpUrl("http://localhost/v1")), "q", "c")
+        stopped.set()
+
+    monkeypatch.setattr("marabrain.compression.httpx2.AsyncClient", Client)
+    with anyio.fail_after(5):
+        async with anyio.create_task_group() as tasks:
+            try:
+                scope = await tasks.start(read)
+                await requested.wait()
+                scope.cancel()
+                await closing.wait()
+                await anyio.wait_all_tasks_blocked()
+                assert not stopped.is_set() and not closed.is_set()
+            finally:
+                release.set()
+    assert stopped.is_set() and closed.is_set()
