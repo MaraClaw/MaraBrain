@@ -48,14 +48,15 @@ class Settings(BaseSettings):
     operation_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
     max_transient_processes: Annotated[int, Field(ge=2)] | None = None
     max_capture_bytes: Annotated[int, Field(gt=0)] | None = None
+    max_resident_workspaces: Annotated[int, Field(strict=True, gt=0)] | None = None
     engine_mode: EngineMode = EngineMode.EXTERNAL
     engine_startup_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 30.0
     workspace_root: Path | None = None
     llm: LLMSettings = Field(default_factory=LLMSettings)
 
-    @field_validator("domain_command_capacity", mode="before")
+    @field_validator("domain_command_capacity", "max_resident_workspaces", mode="before")
     @classmethod
-    def parse_domain_command_capacity(cls, value: object) -> int | None:
+    def parse_optional_capacity(cls, value: object) -> int | None:
         """Parse an optional strict positive capacity without exposing rejected input."""
         if value is None or value == "":
             return None
@@ -63,7 +64,14 @@ class Settings(BaseSettings):
         try:
             return capacity.validate_json(value) if isinstance(value, str) else capacity.validate_python(value)
         except ValidationError:
-            raise PydanticCustomError("domain_command_capacity", "Domain command capacity requires a positive integer.") from None
+            raise PydanticCustomError("positive_capacity", "Capacity requires a positive integer.") from None
+
+    @model_validator(mode="after")
+    def require_managed_residency(self) -> Self:
+        """Reject a resident cap when the application does not own its workspace daemons."""
+        if self.max_resident_workspaces is not None and self.engine_mode is EngineMode.EXTERNAL:
+            raise PydanticCustomError("managed_residency_required", "Resident workspace capacity requires managed engine mode.")
+        return self
 
     @field_validator("startup_timeout_seconds", "operation_timeout_seconds", "max_transient_processes", "max_capture_bytes", mode="before")
     @classmethod

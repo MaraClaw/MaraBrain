@@ -91,15 +91,15 @@ def register_memory_tools(
         """Create a new Markdown memory in a domain; an existing memory is never overwritten. Returns Crystalline's receipt, including its permalink."""
         deadline = deadline_after(operation_timeout_seconds)
         manager.admit([domain])
-        runtime = await manager.get(workspace_id, deadline=deadline)
-        (resolved,) = await runtime.registry.resolve([domain], create=True, deadline=deadline)
         options = [
             *([] if tags is None else [f"--tags={','.join(tags)}"]),
             *([] if folder is None else [f"--folder={folder}"]),
             *([] if metadata is None else ["--metadata", json.dumps(metadata, allow_nan=False)]),
         ]
-        with runtime.admission.admit([resolved]):
-            return await run_json(["write", resolved, title, *options], content, command_timeout_seconds, context=runtime.context, deadline=deadline)
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            (resolved,) = await runtime.registry.resolve([domain], create=True, deadline=deadline)
+            with runtime.admission.admit([resolved]):
+                return await run_json(["write", resolved, title, *options], content, command_timeout_seconds, context=runtime.context, deadline=deadline)
 
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True})
     async def read_memory(
@@ -115,12 +115,12 @@ def register_memory_tools(
             raise ToolError("A query is required when read compression is enabled.")
         deadline = deadline_after(operation_timeout_seconds)
         manager.admit([domain])
-        runtime = await manager.get(workspace_id, deadline=deadline)
-        (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
-        with runtime.admission.admit([resolved]):
-            result = await run_json(
-                ["read", permalink, f"--domain={resolved}"], timeout_seconds=command_timeout_seconds, context=runtime.context, deadline=deadline
-            )
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
+            with runtime.admission.admit([resolved]):
+                result = await run_json(
+                    ["read", permalink, f"--domain={resolved}"], timeout_seconds=command_timeout_seconds, context=runtime.context, deadline=deadline
+                )
         if compress and query is not None:
             settings = llm_settings if llm_settings is not None else LLMSettings()
             settings.require_configured()
@@ -163,26 +163,30 @@ def register_memory_tools(
         """Edit an existing memory with one operation; expected_checksum from read_memory refuses the edit if the memory changed since."""
         deadline = deadline_after(operation_timeout_seconds)
         manager.admit([domain])
-        runtime = await manager.get(workspace_id, deadline=deadline)
-        (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
         checksum = [] if expected_checksum is None else [f"--expected-checksum={expected_checksum}"]
         name, *flags = _edit_arguments(operation)
-        with runtime.admission.admit([resolved]):
-            return await run_json(
-                ["edit", permalink, resolved, name, *flags, *checksum], operation.content, command_timeout_seconds, context=runtime.context, deadline=deadline
-            )
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
+            with runtime.admission.admit([resolved]):
+                return await run_json(
+                    ["edit", permalink, resolved, name, *flags, *checksum],
+                    operation.content,
+                    command_timeout_seconds,
+                    context=runtime.context,
+                    deadline=deadline,
+                )
 
     @server.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})
     async def delete_memory(workspace_id: WorkspaceId, domain: Domain, permalink: Permalink) -> JsonObject:
         """Permanently delete one memory without confirmation or checksum protection."""
         deadline = deadline_after(operation_timeout_seconds)
         manager.admit([domain])
-        runtime = await manager.get(workspace_id, deadline=deadline)
-        (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
-        with runtime.admission.admit([resolved]):
-            return await run_json(
-                ["delete", permalink, resolved, "--force"], timeout_seconds=command_timeout_seconds, context=runtime.context, deadline=deadline
-            )
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
+            with runtime.admission.admit([resolved]):
+                return await run_json(
+                    ["delete", permalink, resolved, "--force"], timeout_seconds=command_timeout_seconds, context=runtime.context, deadline=deadline
+                )
 
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False})
     async def search_memories(
@@ -191,13 +195,13 @@ def register_memory_tools(
         """Search memories in one or more domains for nonempty query text, optionally narrowed by tags. Hits give the domain and permalink for read_memory."""
         deadline = deadline_after(operation_timeout_seconds)
         manager.admit(domains)
-        runtime = await manager.get(workspace_id, deadline=deadline)
-        resolved = await runtime.registry.resolve(domains, deadline=deadline)
-        filters = [*(f"--domain={domain}" for domain in resolved), *(f"--tag={tag}" for tag in tags or [])]
-        with runtime.admission.admit(resolved):
-            return await run_json(
-                ["search", *filters, f"--limit={limit}", f"--page={page}", query],
-                timeout_seconds=command_timeout_seconds,
-                context=runtime.context,
-                deadline=deadline,
-            )
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            resolved = await runtime.registry.resolve(domains, deadline=deadline)
+            filters = [*(f"--domain={domain}" for domain in resolved), *(f"--tag={tag}" for tag in tags or [])]
+            with runtime.admission.admit(resolved):
+                return await run_json(
+                    ["search", *filters, f"--limit={limit}", f"--page={page}", query],
+                    timeout_seconds=command_timeout_seconds,
+                    context=runtime.context,
+                    deadline=deadline,
+                )

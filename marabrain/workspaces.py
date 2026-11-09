@@ -33,11 +33,16 @@ class WorkspaceRuntime:
 
 @dataclass(slots=True)
 class _Activation:
-    """Mutate one app-owned activation result and wake every independent request waiter."""
+    """Mutate one generation's reservations and supervisor-owned startup and cleanup state."""
 
     ready: anyio.Event = field(default_factory=anyio.Event)
+    done: anyio.Event = field(default_factory=anyio.Event)
+    scope: anyio.CancelScope = field(default_factory=anyio.CancelScope)
+    predecessor: anyio.Event | None = None
     runtime: WorkspaceRuntime | None = None
     error: ToolError | None = None
+    users: int = 0
+    last_used: int = 0
 
 
 class WorkspaceManager:
@@ -50,6 +55,8 @@ class WorkspaceManager:
         self._root: Path = (settings.workspace_root if settings.workspace_root is not None else context.state_home / "marabrain" / "workspaces").absolute()
         self._tasks: TaskGroup | None = None
         self._activations: dict[str, _Activation] = {}
+        self._pending: dict[str, _Activation] = {}
+        self._recency = 0
 
     @asynccontextmanager
     async def lifespan(self) -> AsyncGenerator[None]:
@@ -65,27 +72,62 @@ class WorkspaceManager:
                     self._tasks = None
                     tasks.cancel_scope.cancel()
         finally:
-            for activation in self._activations.values():
+            for activation in (*self._activations.values(), *self._pending.values()):
                 activation.ready.set()
             self._activations.clear()
+            self._pending.clear()
 
     async def get(self, workspace_id: str, *, deadline: float | None = None) -> WorkspaceRuntime:
-        """Join one activation without assigning its ownership or startup budget to the waiter."""
-        with deadline_scope(deadline):
-            tasks = self._tasks
-            if tasks is None:
-                raise ToolError("Workspace manager is not running.")
-            activation = self._activations.get(workspace_id)
-            if activation is None or activation.error is not None:
-                activation = _Activation()
+        """Retain direct acquisition compatibility only when runtime retirement is disabled."""
+        if self._settings.max_resident_workspaces is not None:
+            raise ToolError("Workspace runtime requires a lease.")
+        async with self.lease(workspace_id, deadline=deadline) as runtime:
+            return runtime
+
+    def _reserve(self, workspace_id: str) -> _Activation:
+        """Atomically reserve use or one idle victim's slot without queuing for busy capacity."""
+        tasks = self._tasks
+        if tasks is None:
+            raise ToolError("Workspace manager is not running.")
+        activation = self._pending.get(workspace_id) or self._activations.get(workspace_id)
+        if activation is None:
+            activation = _Activation()
+            limit = self._settings.max_resident_workspaces
+            if limit is not None and len(self._activations) + len(self._pending) >= limit:
+                victims = [row for row in self._activations.values() if row.runtime is not None and row.users == 0 and not row.scope.cancel_called]
+                if not victims:
+                    raise ToolError("Resident workspace capacity is busy.")
+                victim = min(victims, key=lambda row: row.last_used)
+                victim.scope.cancel()
+                activation.predecessor = victim.done
+                self._pending[workspace_id] = activation
+            else:
                 self._activations[workspace_id] = activation
-                tasks.start_soon(self._activate, workspace_id, activation)
-            await activation.ready.wait()
-            if activation.error is not None:
-                raise activation.error
-            if activation.runtime is None or self._tasks is None:
-                raise ToolError("Workspace runtime is unavailable.")
-            return activation.runtime
+            tasks.start_soon(self._activate, workspace_id, activation)
+        if activation.scope.cancel_called:
+            raise ToolError("Resident workspace capacity is busy.")
+        activation.users += 1
+        return activation
+
+    @asynccontextmanager
+    async def lease(self, workspace_id: str, *, deadline: float | None = None) -> AsyncGenerator[WorkspaceRuntime]:
+        """Pin a generation before awaiting readiness through the caller's complete engine phase."""
+        with deadline_scope(deadline):
+            activation = self._reserve(workspace_id)
+            used = False
+            try:
+                await activation.ready.wait()
+                if activation.error is not None:
+                    raise activation.error
+                if activation.runtime is None or self._tasks is None:
+                    raise ToolError("Workspace runtime is unavailable.")
+                used = True
+                yield activation.runtime
+            finally:
+                activation.users -= 1
+                if used:
+                    self._recency += 1
+                    activation.last_used = self._recency
 
     def admit(self, names: list[str]) -> None:
         """Reject denied supplied domains before any workspace activation side effects."""
@@ -95,24 +137,30 @@ class WorkspaceManager:
 
     async def _activate(self, workspace_id: str, activation: _Activation) -> None:
         """Enter and exit an engine's scopes in this supervisor task for its entire lifetime."""
-        deadline = deadline_after(self._settings.startup_timeout_seconds)
         try:
-            with anyio.fail_after(startup_remaining(deadline)) as startup:
-                remaining = startup_remaining(deadline)
-                storage_timeout = self._settings.command_timeout_seconds if remaining is None else min(remaining, self._settings.command_timeout_seconds)
-                await anyio.to_thread.run_sync(prepare_workspace, workspace_id, self._root, storage_timeout)
-                startup_remaining(deadline)
-                context = self._context.for_workspace(workspace_id, self._root)
-                async with self._engine(context, deadline):
-                    policy = None if self._settings.allowed_domains is None else frozenset(self._settings.allowed_domains)
-                    registry = DomainRegistry.from_environment(self._settings.command_timeout_seconds, policy, context=context)
-                    await registry.synchronize(deadline=deadline)
+            # Enclose managed_engine's watcher group so planned retirement exits it before reaping.
+            with activation.scope:
+                if activation.predecessor is not None:
+                    await activation.predecessor.wait()
+                    del self._pending[workspace_id]
+                    self._activations[workspace_id] = activation
+                deadline = deadline_after(self._settings.startup_timeout_seconds)
+                with anyio.fail_after(startup_remaining(deadline)) as startup:
+                    remaining = startup_remaining(deadline)
+                    storage_timeout = self._settings.command_timeout_seconds if remaining is None else min(remaining, self._settings.command_timeout_seconds)
+                    await anyio.to_thread.run_sync(prepare_workspace, workspace_id, self._root, storage_timeout)
                     startup_remaining(deadline)
-                    # Keep the scope on its original stack while releasing its preparation-only deadline.
-                    startup.deadline = float("inf")
-                    activation.runtime = WorkspaceRuntime(context, registry, DomainCommandAdmission(self._settings.domain_command_capacity))
-                    activation.ready.set()
-                    await anyio.sleep_forever()
+                    context = self._context.for_workspace(workspace_id, self._root)
+                    async with self._engine(context, deadline):
+                        policy = None if self._settings.allowed_domains is None else frozenset(self._settings.allowed_domains)
+                        registry = DomainRegistry.from_environment(self._settings.command_timeout_seconds, policy, context=context)
+                        await registry.synchronize(deadline=deadline)
+                        startup_remaining(deadline)
+                        # Keep the scope on its original stack while releasing its preparation-only deadline.
+                        startup.deadline = float("inf")
+                        activation.runtime = WorkspaceRuntime(context, registry, DomainCommandAdmission(self._settings.domain_command_capacity))
+                        activation.ready.set()
+                        await anyio.sleep_forever()
         except ExceptionGroup as errors:
             if activation.runtime is not None or errors.subgroup(EngineLifecycleError) is not None:
                 raise
@@ -130,7 +178,11 @@ class WorkspaceManager:
                 raise
             activation.error = ToolError("Workspace runtime activation failed.")
         finally:
+            for entries in (self._activations, self._pending):
+                if entries.get(workspace_id) is activation:
+                    del entries[workspace_id]
             activation.ready.set()
+            activation.done.set()
 
     @asynccontextmanager
     async def _engine(self, context: EngineContext, deadline: float | None) -> AsyncGenerator[None]:
@@ -153,9 +205,12 @@ class WorkspaceManager:
         if self._tasks is None:
             return False
         deadline = anyio.current_time() + self._settings.health_timeout_seconds
+        snapshot = tuple(row for row in self._activations.values() if not row.scope.cancel_called)
+        for activation in snapshot:
+            activation.users += 1
         try:
             with anyio.fail_after(self._settings.health_timeout_seconds):
-                for activation in tuple(self._activations.values()):
+                for activation in snapshot:
                     await activation.ready.wait()
                     if activation.error is not None or activation.runtime is None:
                         return False
@@ -164,3 +219,6 @@ class WorkspaceManager:
                 return True
         except TimeoutError, TransientLimitError:
             return False
+        finally:
+            for activation in snapshot:
+                activation.users -= 1
