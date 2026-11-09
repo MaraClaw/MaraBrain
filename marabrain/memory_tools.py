@@ -9,6 +9,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
 
 from marabrain.compression import compress_memory
+from marabrain.compression_cache import CompressionCache
 from marabrain.crystalline import JsonObject, run_json
 from marabrain.deadlines import deadline_after
 from marabrain.domain_admission import DomainCommandAdmission
@@ -76,6 +77,7 @@ def register_memory_tools(
     context: EngineContext | None = None,
     operation_timeout_seconds: float | None = None,
     domain_command_capacity: int | None = None,
+    compression_cache: CompressionCache | None = None,
 ) -> None:
     """Register the five Crystalline-backed memory tools on the server."""
 
@@ -133,7 +135,10 @@ def register_memory_tools(
             async with anyio.create_task_group() as tasks:
                 tasks.start_soon(report_wait)
                 try:
-                    compression = await compress_memory(settings, query, memory.content)
+                    if compression_cache is None:
+                        compression = await compress_memory(settings, query, memory.content)
+                    else:
+                        compression = await compression_cache.get(resolved, permalink, query, memory.content)
                 except ToolError as error:
                     compression = error
                 finally:
