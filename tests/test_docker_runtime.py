@@ -25,6 +25,15 @@ def launcher(tmp_path: Path) -> Path:
         "import json, os, sys\n"
         "with open(os.environ['DOCKER_LOG'], 'a') as log:\n"
         "    log.write(json.dumps({'args': sys.argv[1:], 'env': dict(os.environ)}) + '\\n')\n"
+        "if os.environ.get('DOCKER_VALIDATE_PREFLIGHT') and sys.argv[1] == 'run' and '--name' not in sys.argv:\n"
+        "    environment = {k: v for k, v in os.environ.items() if not k.startswith(('MARABRAIN_', 'EMBEDDING_', 'LLM_'))}\n"
+        "    for index, argument in enumerate(sys.argv[:-1]):\n"
+        "        if argument == '--env':\n"
+        "            name, separator, value = sys.argv[index + 1].partition('=')\n"
+        "            value = value if separator else os.environ.get(name)\n"
+        "            if value is not None:\n"
+        "                environment[name] = value\n"
+        "    os.execve(sys.executable, [sys.executable, *sys.argv[sys.argv.index('python') + 1:]], environment)\n"
     )
     docker.chmod(0o755)
     return tmp_path
@@ -187,6 +196,63 @@ def test_launcher_forwards_optional_limits_for_settings(
             else:
                 settings = Settings()
                 assert (settings.max_transient_processes, settings.max_capture_bytes) == expected
+
+
+@pytest.mark.parametrize(
+    ("exported", "dotenv", "valid"),
+    [
+        *((values, None, True) for values in ((None, None, None), ("", "", ""), (None, "", None), (None, None, ""))),
+        *((values, None, True) for values in (("1", "1", "1"), ("2", None, None), (None, "3", "4096"))),
+        ((None, None, None), ("2", "3", "4096"), True),
+        (("invalid", "invalid", "invalid"), ("2", "3", "4096"), True),
+        (("2", "3", "4096"), ("1", "4", "512"), True),
+        *((("2", "3", "4096"), values, True) for values in (("", "", ""), ("", None, None), (None, "", ""))),
+        *(
+            (tuple(value if index == target else "2" for index in range(3)), None, False)
+            for target in range(3)
+            for value in ("0", "-1", "1.5", "true", "false", "private-scalar", "{}")
+        ),
+        *((values, None, False) for values in (("2", "3", None), ("2", None, "4096"), ("2", "3", ""), ("2", "", "4096"))),
+        (("2", "3", "4096"), ("0", None, None), False),
+        (("2", "3", "4096"), (None, "", None), False),
+    ],
+)
+def test_launcher_forwards_uniform_limits_and_validates_preflight(
+    launcher: Path, exported: tuple[str | None, ...], dotenv: tuple[str | None, ...] | None, valid: bool
+) -> None:
+    """Verify scalar precedence, disabled values and preflight rejection through constructed Docker environments."""
+    names = ("MARABRAIN_DOMAIN_COMMAND_CAPACITY", "LLM_COMPRESSION_CACHE_MAX_ENTRIES", "LLM_COMPRESSION_CACHE_MAX_BYTES")
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
+    environment.update(
+        PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}",
+        DOCKER_LOG=str(launcher / "calls"),
+        MARABRAIN_BEARER_SECRET=SECRET,
+        DOCKER_VALIDATE_PREFLIGHT="1",
+    )
+    environment.update((name, value) for name, value in zip(names, exported, strict=True) if value is not None)
+    if dotenv is not None:
+        (launcher / ".env").write_text("".join(f"{name}='{value}'\n" for name, value in zip(names, dotenv, strict=True) if value is not None))
+    result = subprocess.run([str(launcher / "start-from-docker.sh")], env=environment, capture_output=True, text=True, timeout=20, check=False)
+    calls = [json.loads(line) for line in (launcher / "calls").read_text().splitlines()]
+    assert (result.returncode == 0) == valid, result.stderr
+    assert len(calls) == (3 if valid else 2)
+    assert valid or "ValidationError" in result.stderr
+    assert "private-scalar" not in result.stderr
+    expected = tuple(override if override is not None else value for value, override in zip(exported, dotenv or (None,) * 3, strict=True))
+    for call in calls[1:]:
+        with pytest.MonkeyPatch.context() as container:
+            for name in tuple(os.environ):
+                if name.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_")):
+                    container.delenv(name)
+            for name, value in zip(names, expected, strict=True):
+                assert any(call["args"][index : index + 2] == ["--env", name] for index in range(len(call["args"]) - 1))
+                assert call["env"].get(name) == value
+                if value is not None:
+                    container.setenv(name, value)
+            if valid:
+                settings = Settings()
+                limits = tuple(int(value) if value else None for value in expected)
+                assert (settings.domain_command_capacity, settings.llm.compression_cache_max_entries, settings.llm.compression_cache_max_bytes) == limits
 
 
 @pytest.mark.parametrize("default", [True, False])
