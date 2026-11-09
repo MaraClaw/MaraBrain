@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     max_capture_bytes: Annotated[int, Field(gt=0)] | None = None
     engine_mode: EngineMode = EngineMode.EXTERNAL
     engine_startup_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 30.0
+    workspace_root: Path | None = None
     llm: LLMSettings = Field(default_factory=LLMSettings)
 
     @field_validator("domain_command_capacity", mode="before")
@@ -70,10 +71,10 @@ class Settings(BaseSettings):
         """Treat empty optional budgets and limits as disabled without accepting zero."""
         return None if value == "" else value
 
-    @field_validator("bearer_secret_file", mode="before")
+    @field_validator("bearer_secret_file", "workspace_root", mode="before")
     @classmethod
     def empty_secret_file(cls, value: Path | str | None) -> Path | str | None:
-        """Treat an empty credential file setting as absent."""
+        """Treat an empty optional filesystem setting as absent."""
         return value or None
 
     @model_validator(mode="after")

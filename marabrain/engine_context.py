@@ -27,6 +27,27 @@ class EngineContext:
         """Bind programmatic limits to one entry-time environment capture."""
         return replace(cls.capture(), transients=TransientRuntime(settings.max_transient_processes, settings.max_capture_bytes))
 
+    def for_workspace(self, workspace_id: str, root: Path) -> EngineContext:
+        """Derive private workspace selectors while retaining application-wide transient quotas."""
+        from marabrain.workspace_storage import workspace_path
+
+        private = workspace_path(workspace_id, root)
+        environment = {name: value for name, value in self.environment.items() if not name.startswith(("CRYSTALLINE_", "XDG_"))}
+        selectors = {
+            "HOME": private / "h",
+            "XDG_CONFIG_HOME": private / "c",
+            "XDG_STATE_HOME": private / "s",
+            "XDG_DATA_HOME": private / "d",
+            "XDG_CACHE_HOME": private / "k",
+            "XDG_RUNTIME_DIR": private / "r",
+            "XDG_CONFIG_DIRS": private / "c",
+            "XDG_DATA_DIRS": private / "d",
+        }
+        environment.update({name: str(path) for name, path in selectors.items()})
+        identity = {"workspace_id": workspace_id, **{name: str(path) for name, path in selectors.items()}}
+        fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return EngineContext(environment, selectors["XDG_STATE_HOME"], fingerprint, self.transients)
+
     def __post_init__(self) -> None:
         """Detach caller-owned mappings and expose only an immutable environment snapshot."""
         object.__setattr__(self, "environment", MappingProxyType(dict(self.environment)))
