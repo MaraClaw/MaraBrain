@@ -200,12 +200,12 @@ async def test_completed_startup_serves_beyond_total_deadline(
             assert process.stdin is not None and reader is not None
             await process.stdin.send(b'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"health","arguments":{}}}\n')
             result = json.loads(await reader.receive_until(b"\n", 100000))
-            assert result["result"]["structuredContent"] == {"status": "ok", "version": "0.4.2"}
+            assert result["result"]["structuredContent"] == {"status": "ok", "version": "0.4.5"}
             await process.stdin.aclose()
         else:
             async with Client(f"http://127.0.0.1:{unused_tcp_port}/mcp", auth="s" * 32) as client:
                 result = await client.call_tool("health", {})
-                assert result.structured_content == {"status": "ok", "version": "0.4.2"}
+                assert result.structured_content == {"status": "ok", "version": "0.4.5"}
             process.send_signal(signal.SIGTERM)
         with anyio.fail_after(9):
             assert await process.wait() == 0

@@ -157,10 +157,10 @@ async def test_health_checks_activated_workspaces_without_selecting_legacy_engin
     """Report idle readiness and fail once an activated workspace's daemon becomes unavailable."""
     _, events = workspace_cli
     async with Client(create_server(Settings())) as client:
-        assert (await client.call_tool("health")).structured_content == {"status": "ok", "version": "0.4.2"}
+        assert (await client.call_tool("health")).structured_content == {"status": "ok", "version": "0.4.5"}
         assert not events.exists()
         await client.call_tool("create_memory", {"workspace_id": "alpha", "domain": "notes", "title": "shared", "content": "private"})
-        assert (await client.call_tool("health")).structured_content == {"status": "ok", "version": "0.4.2"}
+        assert (await client.call_tool("health")).structured_content == {"status": "ok", "version": "0.4.5"}
         (Path(records(events)[0].state) / "daemon-down").touch()
         with pytest.raises(ToolError):
             await client.call_tool("health")
