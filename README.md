@@ -4,9 +4,9 @@
 
 Python MCP server named `marabrain-mcp`, built with FastMCP. The interface contains
 six tools and no resources or prompts. `health` takes no arguments and returns
-`{"status": "ok", "version": "0.4.2"}` when every activated workspace's
+`{"status": "ok", "version": "0.4.2"}` when every resident workspace's
 [Crystalline](https://github.com/jordiboehme/crystalline) engine answers
-`crystalline ctl status` within one total health probe deadline. With zero activated
+`crystalline ctl status` within one total health probe deadline. With zero resident
 workspaces, the service is ready and `health` succeeds without starting an engine.
 Missing executables, failed probes, and probes exceeding that shared deadline produce
 an MCP tool error. Health does not assure embedding-model readiness.
@@ -234,13 +234,14 @@ Rotate the credential by updating both the server and backend and restarting the
 | `MARABRAIN_ALLOWED_ORIGINS` | `[]` | JSON array of accepted browser origins |
 | `MARABRAIN_ALLOWED_DOMAINS` | unset | JSON array of permitted exact domain names, applied separately within every workspace; unset allows all, `[]` denies all memory operations |
 | `MARABRAIN_WORKSPACE_ROOT` | captured `$XDG_STATE_HOME/marabrain/workspaces` | Optional absolute root for separate workspace storage trees |
-| `MARABRAIN_HEALTH_TIMEOUT_SECONDS` | `2` | Positive finite total probe deadline in seconds across all activated workspace engines |
+| `MARABRAIN_HEALTH_TIMEOUT_SECONDS` | `2` | Positive finite total probe deadline in seconds across all resident workspace engines |
 | `MARABRAIN_COMMAND_TIMEOUT_SECONDS` | `30` | Positive finite memory command deadline in seconds |
 | `MARABRAIN_STARTUP_TIMEOUT_SECONDS` | unset (disabled) | Optional positive finite total budget in seconds for each workspace activation; empty also disables it |
 | `MARABRAIN_OPERATION_TIMEOUT_SECONDS` | unset (disabled) | Optional positive finite total budget for each memory operation's activation wait and Crystalline phase in seconds; empty also disables it |
 | `MARABRAIN_MAX_TRANSIENT_PROCESSES` | unset (disabled) | Optional application-wide integer capacity of at least 2 for transient engine commands across workspaces; empty also disables it |
 | `MARABRAIN_MAX_CAPTURE_BYTES` | unset (disabled) | Optional positive integer ceiling on raw stdout bytes per captured child; empty also disables it |
 | `MARABRAIN_DOMAIN_COMMAND_CAPACITY` | unset (disabled) | Optional positive integer final-command capacity applied independently to every workspace and resolved domain pair; empty also disables it |
+| `MARABRAIN_MAX_RESIDENT_WORKSPACES` | unset (disabled) | Optional strict positive integer cap on owned workspace runtimes in managed mode; empty also disables it; configured external mode is rejected |
 | `MARABRAIN_ENGINE_MODE` | `external` | `external` or `managed`; Docker's default command selects `managed` |
 | `MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS` | `30` | Positive finite managed engine readiness budget in seconds after daemon launch |
 
@@ -282,15 +283,36 @@ credential overlays apply only to that workspace's owned daemon. External mode r
 the daemon provisioned for those workspace paths; a successful health probe does not
 identify the external daemon's configuration.
 
-The two optional resource limits are independent and default to disabled. With
+The optional resource limits are independent and default to disabled. With
 `MARABRAIN_MAX_TRANSIENT_PROCESSES=C`, each application shares C-1 slots for memory
 and domain-registry commands and one reserved control slot for health, readiness,
 or embedding initialization across all workspace activations and serving. Saturated lanes fail
 immediately before launching a child or CLI worker; commands do not queue. Capacity
 remains occupied until the child is reaped and its worker finishes. Separate
 applications have independent capacity; persistent daemons and LLM calls are excluded.
-Managed daemon count grows with activated workspaces and is not bounded by this
-transient limit. Account for each workspace's daemon memory and embedding-model copies.
+Managed daemon count is independent of this transient limit. Without a resident cap,
+it grows with activated workspaces. Account for each resident workspace's daemon memory
+and embedding-model copies.
+
+In managed mode, `MARABRAIN_MAX_RESIDENT_WORKSPACES=4` caps resident runtimes at four.
+Starting, ready, and retiring runtimes occupy their slots until owned daemon and helper
+cleanup finishes. A new workspace can retire the least recently used idle runtime;
+if all slots are starting, leased, or retiring, the request fails immediately with
+`Resident workspace capacity is busy.` There is no queue waiting for busy capacity.
+Concurrent requests for the same activation share it, and canceling one caller does
+not cancel startup for the others. All five memory tools lease the runtime through
+registry work, native commands, and their cleanup. Recency records memory operations;
+health pins only the resident snapshot and does not refresh recency or reactivate
+retired workspaces. Unexpected daemon death remains fatal to the application.
+
+Retirement stops only the owned runtime. Workspace identity, configuration, databases,
+domain files, registry, and model cache remain on disk. A later request performs a
+cold activation and complete domain synchronization before serving memory commands.
+This can repeat embedding readiness work; the cap promises neither a memory ceiling
+nor a latency bound. Compression releases the runtime before its LLM phase, and
+application-owned compression flights and cached results survive retirement. Unset
+or empty residency preserves existing unbounded behavior in either engine mode;
+a configured cap requires `MARABRAIN_ENGINE_MODE=managed`.
 
 `MARABRAIN_DOMAIN_COMMAND_CAPACITY` adds admission per workspace and resolved domain for the final create,
 read, edit, delete, and search commands. For example, export
@@ -367,9 +389,10 @@ container replacement; back it up before removing it. Existing volumes must be w
 by UID/GID 65532. A managed server requires exclusive workspace HOME/XDG paths; do not
 share the volume with another running engine or managed server. On first activation,
 each workspace's Crystalline daemon may download its embedding model; subsequent
-activations reuse that workspace's cache. Model storage and daemon memory grow with
-activated workspaces. Shutdown reaps owned daemons and preserves data. Health checks
-all activated engines within one total deadline, not embedding-model readiness or
+activations reuse that workspace's cache. Model storage grows with persisted workspaces;
+daemon memory grows with resident workspaces. The optional resident cap retires idle
+daemons without removing their data. Shutdown reaps owned daemons and preserves data. Health checks
+all resident engines within one total deadline, not embedding-model readiness or
 semantic-search quality. See the upstream [deployment guide](https://github.com/jordiboehme/crystalline/blob/v0.31.0/docs/deployment.md)
 for offline model provisioning.
 
@@ -408,7 +431,7 @@ It never rewrites the base `/data/config/crystalline/config.yaml` or copies base
 The file stores the API key's environment variable name, never its value. The
 remote provider avoids the default Granite embedding-model download. Restart the
 container after changing these variables; the activation check does not continuously
-monitor the provider, and MCP health checks only activated Crystalline engines.
+monitor the provider, and MCP health checks only resident Crystalline engines.
 
 Leaving all embedding variables unset or empty preserves each workspace's existing
 Crystalline configuration and skips the remote-provider check. A fresh workspace uses the
@@ -501,6 +524,12 @@ container automatically.
 Both optional total-budget variables are exported and forwarded identically to the
 configuration preflight and runtime containers. Empty or unset values leave the
 corresponding total disabled in both containers.
+
+`MARABRAIN_MAX_RESIDENT_WORKSPACES` is exported and forwarded identically to preflight
+and runtime, including sourced `.env` overrides. Both launcher containers explicitly
+use `MARABRAIN_ENGINE_MODE=managed`, including the alternate preflight command, so a
+local `external` setting does not reject a valid Docker cap. Invalid caps fail preflight;
+unset or empty caps preserve unbounded residency.
 
 `MARABRAIN_MAX_TRANSIENT_PROCESSES` and `MARABRAIN_MAX_CAPTURE_BYTES` are also
 exported and forwarded identically to both containers, including sourced `.env`
