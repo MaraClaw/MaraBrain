@@ -4,7 +4,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     allowed_hosts: list[str] = ["127.0.0.1", "localhost", "[::1]"]
     allowed_origins: list[str] = []
     allowed_domains: tuple[Domain, ...] | None = None
+    domain_command_capacity: Annotated[int, Field(strict=True, gt=0)] | None = None
     health_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 2.0
     command_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 30.0
     startup_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
@@ -50,6 +51,18 @@ class Settings(BaseSettings):
     engine_mode: EngineMode = EngineMode.EXTERNAL
     engine_startup_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 30.0
     llm: LLMSettings = Field(default_factory=LLMSettings)
+
+    @field_validator("domain_command_capacity", mode="before")
+    @classmethod
+    def parse_domain_command_capacity(cls, value: object) -> int | None:
+        """Parse an optional strict positive capacity without exposing rejected input."""
+        if value is None or value == "":
+            return None
+        capacity = TypeAdapter(Annotated[int, Field(strict=True, gt=0)])
+        try:
+            return capacity.validate_json(value) if isinstance(value, str) else capacity.validate_python(value)
+        except ValidationError:
+            raise PydanticCustomError("domain_command_capacity", "Domain command capacity requires a positive integer.") from None
 
     @field_validator("startup_timeout_seconds", "operation_timeout_seconds", "max_transient_processes", "max_capture_bytes", mode="before")
     @classmethod
