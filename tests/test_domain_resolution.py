@@ -1,16 +1,25 @@
 """Preserve effective engine identities across every memory tool and exact policies."""
 
 import json
+import os
+import threading
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
+import anyio
 import pytest
-from fastmcp import Client
+from anyio.abc import SocketAttribute, SocketStream
+from anyio.streams.memory import MemoryObjectReceiveStream
+from domain_fake import domain_cli as domain_cli
+from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
-from memory_fake import call
+from memory_fake import FAKE_CLI, RECEIPT, call, calls
 from test_domain_registry import argv, rows
 
 from marabrain.config import Settings
 from marabrain.domain_registry import DomainRegistry
+from marabrain.memory_tools import register_memory_tools
 from marabrain.server import create_server
 
 
@@ -91,3 +100,116 @@ async def test_malformed_shadowing_metadata_never_replaces_snapshot_or_registers
         await call("create_memory", {"domain": "canonical", "title": "one", "content": "body"})
     assert rows() == ["notes"]
     assert argv(cli) == [["--json", "domain", "list"], ["--json", "domain", "list"]]
+
+
+@asynccontextmanager
+async def command_barrier(cli: Path) -> AsyncGenerator[tuple[MemoryObjectReceiveStream[int], anyio.Event]]:
+    """Hold real final commands containing held until explicitly released and check teardown."""
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    port = listener.extra(SocketAttribute.local_port)
+    script = (cli / "crystalline").read_text()
+    marker = 'if plan["hang"]:' if script == FAKE_CLI else 'elif args[0] == "read":'
+    gate = (
+        "if 'held' in sys.argv:\n"
+        "    import socket\n"
+        f"    with socket.create_connection(('127.0.0.1', {port})) as connection:\n"
+        "        connection.sendall(str(os.getpid()).encode())\n"
+        "        connection.recv(1)\n"
+    )
+    if script == FAKE_CLI:
+        script = script.replace(marker, gate + marker)
+    else:
+        script = script.replace("domains = json.loads", gate + "domains = json.loads")
+    (cli / "crystalline").write_text(script)
+    send, receive = anyio.create_memory_object_stream[int](10)
+    release = anyio.Event()
+    pids: list[int] = []
+
+    async def hold(connection: SocketStream) -> None:
+        """Report child launch before retaining the live child at its socket barrier."""
+        async with connection:
+            pid = int(await connection.receive())
+            pids.append(pid)
+            await send.send(pid)
+            await release.wait()
+            await connection.send(b"x")
+
+    async with listener, send, receive, anyio.create_task_group() as tasks:
+        tasks.start_soon(listener.serve, hold)
+        try:
+            yield receive, release
+        finally:
+            release.set()
+            tasks.cancel_scope.cancel()
+    for pid in pids:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    assert not [worker for worker in threading.enumerate() if worker.name == "marabrain-cli"]
+
+
+@pytest.mark.parametrize("spelling", ["LEGACY", "CANONICAL", "ALIAS"])
+@pytest.mark.parametrize(
+    "tool,arguments",
+    [
+        ("create_memory", {"title": "one", "content": "body"}),
+        ("read_memory", {"permalink": "one"}),
+        ("edit_memory", {"permalink": "one", "operation": {"type": "append", "content": "body"}}),
+        ("delete_memory", {"permalink": "one"}),
+        ("search_memories", {"query": "body"}),
+    ],
+)
+async def test_final_commands_share_resolved_domain_quota(cli: Path, spelling: str, tool: str, arguments: dict[str, object]) -> None:
+    """Refuse all final command variants sharing one resolved identity without launching them."""
+    (cli / "domains.json").write_text(json.dumps([{"name": "Legacy", "canonical_name": "canonical", "aliases": ["alias"]}]))
+    await DomainRegistry.from_environment(5).synchronize()
+    (cli / "calls.jsonl").unlink()
+    server = FastMCP("quotas")
+    register_memory_tools(server, domain_command_capacity=1)
+    async with command_barrier(cli) as (started, release), Client(server) as client:
+
+        async def occupy() -> None:
+            """Hold one resolved exact-name permit through a real child."""
+            assert (await client.call_tool("read_memory", {"domain": "Legacy", "permalink": "held"})).structured_content == RECEIPT
+
+        with anyio.fail_after(10):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(occupy)
+                await started.receive()
+                try:
+                    supplied = {"domains": [spelling]} if tool == "search_memories" else {"domain": spelling}
+                    with pytest.raises(ToolError, match="domain command capacity is exhausted"):
+                        await client.call_tool(tool, {**arguments, **supplied})
+                    assert len(calls(cli)) == 1
+                finally:
+                    release.set()
+        assert (await client.call_tool("read_memory", {"domain": spelling, "permalink": "one"})).structured_content == RECEIPT
+
+
+async def test_rejected_final_create_preserves_completed_registration(domain_cli: Path) -> None:
+    """Register a missing domain outside its occupied final-command quota without undoing it on refusal."""
+    server = FastMCP("registration")
+    register_memory_tools(server, domain_command_capacity=1)
+    async with command_barrier(domain_cli) as (started, release), Client(server) as client:
+
+        async def occupy() -> None:
+            """Retain a new-name command permit while creation registers the domain."""
+            result = await client.call_tool("read_memory", {"domain": "new", "permalink": "held"})
+            assert result.structured_content == {"domain": "new", "content": "body"}
+
+        with anyio.fail_after(10):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(occupy)
+                await started.receive()
+                try:
+                    with pytest.raises(ToolError, match="domain command capacity is exhausted"):
+                        await client.call_tool("create_memory", {"domain": "new", "title": "one", "content": "body"})
+                    assert rows() == ["new", "notes"]
+                    assert [arguments[1:3] for arguments in argv(domain_cli)] == [["read", "held"], ["domain", "list"], ["domain", "init"], ["domain", "add"]]
+                    registry = DomainRegistry.from_environment(5)
+                    (registry.storage.domain_path("new") / "held.md").write_text("body")
+                finally:
+                    release.set()
+        assert (await client.call_tool("create_memory", {"domain": "new", "title": "one", "content": "body"})).structured_content == {
+            "domain": "new",
+            "permalink": "one",
+        }

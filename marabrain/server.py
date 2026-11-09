@@ -77,6 +77,7 @@ def create_server(settings: Settings, *, context: EngineContext | None = None) -
         llm_settings=settings.llm,
         context=bound_context,
         operation_timeout_seconds=settings.operation_timeout_seconds,
+        domain_command_capacity=settings.domain_command_capacity,
     )
     return server
 
