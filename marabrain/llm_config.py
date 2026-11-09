@@ -1,10 +1,18 @@
 """Typed environment settings for optional LLM compression."""
 
+import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
 from fastmcp.exceptions import ToolError
-from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    AnyHttpUrl,
+    Field,
+    JsonValue,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_core import PydanticCustomError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -32,6 +40,20 @@ class LLMSettings(BaseSettings):
     max_tokens: Annotated[int, Field(gt=0)] = 32768
     max_input_tokens: Annotated[int, Field(gt=0)] = 256000
     timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 60.0
+    compression_cache_max_entries: Annotated[int, Field(strict=True, gt=0)] | None = None
+    compression_cache_max_bytes: Annotated[int, Field(strict=True, gt=0)] | None = None
+
+    @field_validator("compression_cache_max_entries", "compression_cache_max_bytes", mode="before")
+    @classmethod
+    def integer_cache_limit(cls, value: JsonValue) -> JsonValue:
+        """Parse integer environment strings while preserving strict scalar validation."""
+        match value:
+            case "":
+                return None
+            case str() as text if re.fullmatch(r"[+-]?[0-9]+", text):
+                return int(text)
+            case _:
+                return value
 
     @field_validator("provider_url")
     @classmethod
@@ -46,6 +68,8 @@ class LLMSettings(BaseSettings):
         """Reject incomplete configuration and incompatible Anthropic options."""
         if (self.model is None) != (self.provider_url is None):
             raise PydanticCustomError("incomplete_llm", "Model and provider URL must be configured together")
+        if (self.compression_cache_max_entries is None) != (self.compression_cache_max_bytes is None):
+            raise PydanticCustomError("incomplete_compression_cache", "Compression cache max entries and max bytes must be configured together")
         if self.provider == LLMProvider.ANTHROPIC and self.temperature is not None:
             raise PydanticCustomError("anthropic_temperature", "Anthropic temperature is not supported")
         return self
