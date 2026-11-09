@@ -3,10 +3,13 @@
 🦞 Second Brain For OpenClaw-backed Agents.
 
 Python MCP server named `marabrain-mcp`, built with FastMCP. The interface contains
-six tools and no resources or prompts. `health` returns `{"status": "ok", "version": "0.4.2"}`
-only after the [Crystalline](https://github.com/jordiboehme/crystalline) background engine
-answers `crystalline ctl status`. Missing executables, failed probes, and probes taking
-longer than the configured health deadline produce an MCP tool error instead of a successful response.
+six tools and no resources or prompts. `health` takes no arguments and returns
+`{"status": "ok", "version": "0.4.2"}` when every activated workspace's
+[Crystalline](https://github.com/jordiboehme/crystalline) engine answers
+`crystalline ctl status` within one total health probe deadline. With zero activated
+workspaces, the service is ready and `health` succeeds without starting an engine.
+Missing executables, failed probes, and probes exceeding that shared deadline produce
+an MCP tool error. Health does not assure embedding-model readiness.
 The other five tools manage memories through the Crystalline CLI; see [Memory tools](#memory-tools).
 
 ## Memory tools
@@ -14,45 +17,75 @@ The other five tools manage memories through the Crystalline CLI; see [Memory to
 The tools run the pinned Crystalline 0.31.0 `crystalline --json` command without a shell,
 send content on stdin, and return its JSON object unchanged (native fields, no added keys)
 unless `read_memory` is called with `compress=true`, as described below.
-The `crystalline` executable must be on `PATH`, using the same HOME/XDG configuration
-as MaraBrain. `health` also requires its daemon to be running; the Docker image manages
-both processes. Each CLI command has a configurable 30-second default deadline and
-is never retried. Domain synchronization and registration can add commands before a memory write.
+All five memory tools require `workspace_id`: a strict, case-sensitive ASCII string
+of 1-64 characters matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. There is no default,
+normalization, or adoption of legacy data. For example, `Team_A` and `team_a` are
+different workspaces; missing IDs, non-string values, whitespace, dots, and Unicode
+characters are rejected.
 
-Startup synchronizes a persistent SQLite registry from `crystalline --json domain list`
-in both engine modes and fails before serving if the complete list is invalid or unavailable.
+The calling backend must authenticate the tenant and authorize workspace membership
+before supplying `workspace_id`. The ID routes storage and engine work; it is not
+authorization. The shared HTTP bearer credential is only for a trusted backend that
+enforces this contract, not for direct access by tenants.
+
+The `crystalline` executable must be on `PATH`. Every activated workspace owns separate
+HOME/XDG paths, configuration, database, control socket, domains, registry, and admission
+state. In managed mode, its dedicated daemon starts lazily on the first memory request.
+In external mode, a dedicated daemon must already be provisioned on that workspace's
+paths; the base daemon is never used. The engine must be ready before registry
+synchronization or memory commands in either mode. Each CLI command has a configurable
+30-second default deadline and is never retried. Domain synchronization and registration
+can add commands before a memory write.
+
+Workspace activation synchronizes its persistent SQLite registry from
+`crystalline --json domain list` in both engine modes and fails that activation if the
+complete list is invalid or unavailable.
 `create_memory` initializes and registers missing file domains before writing, using
 `domain init <path> --name <name>` followed by `domain add <name> --path <path>`.
 New names are lowercase ASCII, 1-64 characters, start with a letter or digit, and
 contain only letters, digits, underscores, hyphens, and dots; `..` is rejected.
-Existing exact Crystalline registration names and paths are preserved. All memory tools
+Existing exact Crystalline registration names and paths within that workspace are preserved. All memory tools
 resolve case variants, canonical names, and effective aliases to the existing exact registration
 name; ambiguous normalization collisions fail synchronization instead of merging domains.
 
-The registry is `$XDG_STATE_HOME/marabrain/domains.sqlite3`, and automatic domains live
-in sibling `domains/<name>` directories. Without `XDG_STATE_HOME`, local storage defaults
-to `~/.local/state/marabrain`. Storage must be writable, owned by the server user, and
-free of symlink components. Docker already persists this directory under `/data/state`.
-A process lock serializes registry and engine registration changes across MaraBrain servers
-sharing these paths; use the same HOME/XDG paths and a local filesystem with POSIX locks.
+`MARABRAIN_WORKSPACE_ROOT` optionally selects an absolute workspace root; its default is
+the captured `$XDG_STATE_HOME/marabrain/workspaces`, using `~/.local/state` when
+`XDG_STATE_HOME` is unset. Each workspace uses a hashed subdirectory token with an exact
+identity record. Before external provisioning, call
+`marabrain.workspace_storage.prepare_workspace(workspace_id, root)` as the server user
+to bind the identity and create its private directories. Prepopulated directories without
+an identity record are rejected. Do not construct token paths yourself: operators can use
+`EngineContext.capture().for_workspace(workspace_id, root)` to obtain the captured path environment
+for provisioning or administration with the same root as the server. Each workspace's
+registry and automatic domain directories live in its own storage tree.
+
+Directories must be private, writable, owned by the server user, and free of symlink
+components. Use a local filesystem with POSIX locks. A short absolute workspace root
+may be needed to fit the full Unix socket path within 103 bytes on macOS or 107 bytes
+on Linux; overlong paths fail without fallback relocation. Docker persists the default
+root beneath `/data`. Registry locks and domain admission are scoped to each workspace
+and domain, so concurrent workspaces do not serialize each other's memory commands.
+Application-wide process limits still apply across workspaces. A process lock serializes
+registry and engine registration changes for servers sharing the same workspace paths.
 Independent CLI/configuration writers do not participate in this lock and must not run concurrently.
 Failed registration never proceeds to a memory write. A validated domain list reconciles
 an uncertain add result; an actually registered domain can therefore appear in the registry
-even when the original command reports failure. Restart also reconciles the complete list.
+even when the original command reports failure. Reactivation after a restart also
+reconciles that workspace's complete list.
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
-| `create_memory` | `domain`, `title`, `content`, optional `tags` (list), `folder`, `metadata` (JSON object) | Creates a Markdown memory; an existing one is never overwritten |
-| `read_memory` | `domain`, `permalink`; optional `compress` (boolean, default false), `query` (default null) | Returns full Markdown with frontmatter, `checksum`, links, observations, and relations; compression replaces returned `content` with distilled context and adds `compressed: true` |
-| `edit_memory` | `domain`, `permalink`, `operation`, optional `expected_checksum` | Applies one edit operation |
-| `delete_memory` | `domain`, `permalink` | Permanently deletes without confirmation; no checksum guard |
-| `search_memories` | required nonempty `query` and nonempty `domains` (list); optional `tags` (list), `limit` (1-100, default 10), `page` (1 or more, default 1) | Searches the named domains and returns native JSON unchanged |
+| `create_memory` | `workspace_id`, `domain`, `title`, `content`, optional `tags` (list), `folder`, `metadata` (JSON object) | Creates a Markdown memory; an existing one is never overwritten |
+| `read_memory` | `workspace_id`, `domain`, `permalink`; optional `compress` (boolean, default false), `query` (default null) | Returns full Markdown with frontmatter, `checksum`, links, observations, and relations; compression replaces returned `content` with distilled context and adds `compressed: true` |
+| `edit_memory` | `workspace_id`, `domain`, `permalink`, `operation`, optional `expected_checksum` | Applies one edit operation |
+| `delete_memory` | `workspace_id`, `domain`, `permalink` | Permanently deletes without confirmation; no checksum guard |
+| `search_memories` | required `workspace_id`, nonempty `query` and nonempty `domains` (list); optional `tags` (list), `limit` (1-100, default 10), `page` (1 or more, default 1) | Searches the named domains in that workspace and returns native JSON unchanged |
 
 `search_memories` requires both query text and at least one domain; a missing, null, empty,
 or whitespace-only value is rejected before anything runs. Each hit includes the `domain` and
-`permalink` to pass to `read_memory`.
+`permalink` to pass to `read_memory` with the same `workspace_id`.
 
-`read_memory(domain, permalink, compress=false, query=None)` leaves normal reads unchanged:
+`read_memory(workspace_id, domain, permalink, compress=false, query=None)` leaves normal reads unchanged:
 with `compress=false`, it returns native JSON and full content without calling an LLM.
 With `compress=true`, a nonempty, non-whitespace `query` is required. The
 [configured LLM provider](#optional-read-compression) distills the full memory against
@@ -65,12 +98,12 @@ Only `compress=true` discloses the full memory content and query to the chosen L
 provider. Compression never writes or modifies the source memory. It can reduce context
 passed to the calling agent, but does not reduce storage read I/O. Read or provider
 errors surface as tool errors; there is no fallback to uncompressed content.
-`search_memories` is unchanged and does not accept compression arguments or call an LLM.
+`search_memories` does not accept compression arguments or call an LLM.
 
 For example, pass these MCP arguments to `read_memory`:
 
 ```json
-{"domain": "notes", "permalink": "team/plan", "compress": true, "query": "What is the current rollout plan?"}
+{"workspace_id": "team_a", "domain": "notes", "permalink": "team/plan", "compress": true, "query": "What is the current rollout plan?"}
 ```
 
 Edit `operation` is an object whose `type` selects the fields:
@@ -83,7 +116,7 @@ Edit `operation` is an object whose `type` selects the fields:
 | `insert_before_section`, `insert_after_section` | `section` |
 
 ```json
-{"domain": "notes", "permalink": "team/plan", "expected_checksum": "<checksum from read_memory>",
+{"workspace_id": "team_a", "domain": "notes", "permalink": "team/plan", "expected_checksum": "<checksum from read_memory>",
  "operation": {"type": "replace_section", "section": "Status", "content": "Shipped."}}
 ```
 
@@ -101,17 +134,36 @@ unavailable, a nonzero exit code, malformed output, or a timeout. Raw CLI output
 diagnostics are never returned. A timeout or crash during a mutation does not guarantee
 that nothing was applied; read the memory to check.
 
+### Breaking migration from shared storage
+
+Existing clients must add a backend-authorized `workspace_id` to every memory-tool call.
+Existing base HOME/XDG data, configuration, domain registrations, and databases remain
+unassigned and unreachable through workspace tools. There is no default workspace,
+legacy adoption, or automatic migration, and base configuration is not copied into
+workspace runtimes.
+
+Preserve and back up the old data. Determine tenant ownership before explicitly
+migrating each tenant's memories, domains, and required configuration into that tenant's
+workspace. Provision its dedicated engine using the workspace path environment and
+verify its registrations and data before switching client traffic. Never attach the
+shared base daemon or database to multiple workspaces. Shutdown reaps owned daemons
+and leaves workspace data in place.
+
 ## Install and run locally
 
 Use [uv](https://docs.astral.sh/uv/). The project requires Python 3.14.4 or newer;
 `.python-version` pins the development interpreter.
 
 Install Crystalline using its [upstream installation instructions](https://github.com/jordiboehme/crystalline#get-started),
-then run `crystalline serve --http off` in a separate terminal before calling
-MaraBrain's `health` tool. The daemon and MaraBrain must use the same user and
-HOME/XDG paths so the control socket is shared. Docker manages this daemon for you.
-For local managed mode set `MARABRAIN_ENGINE_MODE=managed`; it requires exclusive
-control of its HOME and XDG state paths. Do not share them with another engine or server.
+then choose an engine mode. For local managed mode set `MARABRAIN_ENGINE_MODE=managed`;
+MaraBrain lazily starts a dedicated daemon for each workspace's first memory request.
+Docker uses managed mode by default. Managed mode requires exclusive control of each
+workspace's HOME/XDG paths; do not share them with another engine or managed server.
+The local default is external mode: preprovision and run a separate
+`crystalline serve --http off` for every workspace after preparing its identity record,
+with the environment from `EngineContext.capture().for_workspace(workspace_id, root)`,
+using the same user as MaraBrain.
+Starting a daemon with only the base HOME/XDG environment does not provision a workspace.
 
 ```sh
 uv sync --locked
@@ -165,9 +217,10 @@ MARABRAIN_TRANSPORT=http uv run --no-sync marabrain
 
 Clients send `Authorization: Bearer <your secret>` on MCP requests. Use a TLS
 reverse proxy for remote access, keep its upstream private, and set the allowed
-hosts to the hostname it forwards. The shared bearer credential is intended for
-trusted service clients; rotate it by updating both the server and clients and
-restarting the server.
+hosts to the hostname it forwards. Keep the shared bearer credential in the trusted
+backend, which authenticates tenants and authorizes membership before choosing each
+`workspace_id`. MaraBrain does not perform per-ID access control.
+Rotate the credential by updating both the server and backend and restarting the server.
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
@@ -179,31 +232,32 @@ restarting the server.
 | `MARABRAIN_BEARER_SECRET_FILE` | unset | UTF-8 file alternative to the bearer secret |
 | `MARABRAIN_ALLOWED_HOSTS` | `["127.0.0.1","localhost","[::1]"]` | JSON array of accepted HTTP hosts |
 | `MARABRAIN_ALLOWED_ORIGINS` | `[]` | JSON array of accepted browser origins |
-| `MARABRAIN_ALLOWED_DOMAINS` | unset | JSON array of permitted exact domain names; unset allows all, `[]` denies all memory operations |
-| `MARABRAIN_HEALTH_TIMEOUT_SECONDS` | `2` | Positive finite health probe deadline in seconds |
+| `MARABRAIN_ALLOWED_DOMAINS` | unset | JSON array of permitted exact domain names, applied separately within every workspace; unset allows all, `[]` denies all memory operations |
+| `MARABRAIN_WORKSPACE_ROOT` | captured `$XDG_STATE_HOME/marabrain/workspaces` | Optional absolute root for separate workspace storage trees |
+| `MARABRAIN_HEALTH_TIMEOUT_SECONDS` | `2` | Positive finite total probe deadline in seconds across all activated workspace engines |
 | `MARABRAIN_COMMAND_TIMEOUT_SECONDS` | `30` | Positive finite memory command deadline in seconds |
-| `MARABRAIN_STARTUP_TIMEOUT_SECONDS` | unset (disabled) | Optional positive finite total startup preparation budget in seconds; empty also disables it |
-| `MARABRAIN_OPERATION_TIMEOUT_SECONDS` | unset (disabled) | Optional positive finite total budget for each memory operation's Crystalline phase in seconds; empty also disables it |
-| `MARABRAIN_MAX_TRANSIENT_PROCESSES` | unset (disabled) | Optional integer capacity of at least 2 for transient engine commands; empty also disables it |
+| `MARABRAIN_STARTUP_TIMEOUT_SECONDS` | unset (disabled) | Optional positive finite total budget in seconds for each workspace activation; empty also disables it |
+| `MARABRAIN_OPERATION_TIMEOUT_SECONDS` | unset (disabled) | Optional positive finite total budget for each memory operation's activation wait and Crystalline phase in seconds; empty also disables it |
+| `MARABRAIN_MAX_TRANSIENT_PROCESSES` | unset (disabled) | Optional application-wide integer capacity of at least 2 for transient engine commands across workspaces; empty also disables it |
 | `MARABRAIN_MAX_CAPTURE_BYTES` | unset (disabled) | Optional positive integer ceiling on raw stdout bytes per captured child; empty also disables it |
-| `MARABRAIN_DOMAIN_COMMAND_CAPACITY` | unset (disabled) | Optional positive integer final-command capacity applied independently to every resolved domain; empty also disables it |
+| `MARABRAIN_DOMAIN_COMMAND_CAPACITY` | unset (disabled) | Optional positive integer final-command capacity applied independently to every workspace and resolved domain pair; empty also disables it |
 | `MARABRAIN_ENGINE_MODE` | `external` | `external` or `managed`; Docker's default command selects `managed` |
 | `MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS` | `30` | Positive finite managed engine readiness budget in seconds after daemon launch |
 
-Domain admission checks both the supplied and resolved exact top-level names before mutations;
+Within each workspace, domain admission checks both the supplied and resolved exact top-level names before mutations;
 normalization never widens an allowlist. For a new mixed-case input, permit both that spelling
 and its lowercase name, or use the lowercase spelling directly. Admission does not isolate files,
-resolve aliases, or redact linked metadata. A mixed allowed and denied search is
+resolve aliases, redact linked metadata, or authorize workspace membership. A mixed allowed and denied search is
 rejected in full. Docker's independent healthcheck has a three-second HTTP timeout
 and five-second outer timeout regardless of the health probe deadline; client
 timeouts and HTTP shutdown grace are separate limits too.
 
-The two optional total budgets are independent. Startup's total begins before
-preparation and covers the existing-engine check, embedding initialization, managed
-daemon launch and readiness, and initial domain synchronization as applicable. It
-ends before serving starts and never limits the server's serving lifetime. Each
-memory operation's total begins before domain resolution and spans lock acquisition,
-domain synchronization and registration, and the final memory command. Compressed
+The two optional total budgets are independent. The startup total now applies to each
+workspace activation and covers preparation, the workspace's existing-engine check,
+embedding initialization, managed daemon launch and readiness, and initial domain
+synchronization as applicable. It never limits the server's serving lifetime. Each
+memory operation's total includes waiting for workspace activation, then domain
+resolution, lock acquisition, domain synchronization and registration, and the final memory command. Compressed
 reads then use their separate `LLM_TIMEOUT_SECONDS` budget for LLM compression.
 Existing command, health, and engine readiness caps still apply with their unchanged
 defaults; a total budget can shorten a step's available time but never extends its cap.
@@ -215,29 +269,35 @@ After expiry is observed, no further Crystalline command is dispatched. Cancella
 and cleanup still reap owned children, release locks, and close SQLite connections,
 which may outlast the budget; these settings do not promise an exact response deadline.
 Mutations with uncertain outcomes are never retried automatically. The next operation
-or startup reconciles uncertain domain registration before trusting cached routes.
+or workspace reactivation reconciles uncertain domain registration before trusting cached routes.
 
 Each application captures an immutable snapshot of its engine execution environment
-at `run_application()` entry or standalone `create_server()` construction. Registry
-paths and configuration identity, health checks, initialization, daemon supervision,
-and memory tools use that snapshot, including HOME/XDG defaults and supported
-`CRYSTALLINE_CONFIG` selection. Later process environment changes do not redirect an
-existing application. Initializer credential overlays apply only to that application's
-owned daemon. External mode retains its captured CLI environment; a successful health
-probe does not identify the external daemon's configuration.
+at `run_application()` entry or standalone `create_server()` construction. Each workspace
+derives its own HOME/XDG paths, configuration identity, registry, health checks,
+initialization, daemon supervision, and memory tools from that snapshot and the captured
+workspace root. Base captured `CRYSTALLINE_*` overrides, including `CRYSTALLINE_CONFIG`,
+are removed from workspace runtimes; base configuration files are not copied. Later
+process environment changes do not redirect an existing application. Initializer
+credential overlays apply only to that workspace's owned daemon. External mode requires
+the daemon provisioned for those workspace paths; a successful health probe does not
+identify the external daemon's configuration.
 
 The two optional resource limits are independent and default to disabled. With
 `MARABRAIN_MAX_TRANSIENT_PROCESSES=C`, each application shares C-1 slots for memory
 and domain-registry commands and one reserved control slot for health, readiness,
-or embedding initialization across startup and serving. Saturated lanes fail
+or embedding initialization across all workspace activations and serving. Saturated lanes fail
 immediately before launching a child or CLI worker; commands do not queue. Capacity
 remains occupied until the child is reaped and its worker finishes. Separate
 applications have independent capacity; persistent daemons and LLM calls are excluded.
+Managed daemon count grows with activated workspaces and is not bounded by this
+transient limit. Account for each workspace's daemon memory and embedding-model copies.
 
-`MARABRAIN_DOMAIN_COMMAND_CAPACITY` adds per-domain admission for the final create,
+`MARABRAIN_DOMAIN_COMMAND_CAPACITY` adds admission per workspace and resolved domain for the final create,
 read, edit, delete, and search commands. For example, export
-`MARABRAIN_DOMAIN_COMMAND_CAPACITY=2` to give every resolved domain its own capacity
-of two commands. Aliases and case variants share their resolved domain's capacity.
+`MARABRAIN_DOMAIN_COMMAND_CAPACITY=2` to give every resolved domain in each workspace
+its own capacity of two commands. Aliases and case variants within a workspace share
+their resolved domain's capacity. The same domain name in another workspace has
+independent counters.
 A search reserves one permit per distinct resolved domain atomically; if any domain
 is full, the whole search fails immediately without launching its final command.
 
@@ -248,7 +308,7 @@ Permits remain occupied through child reaping and worker cleanup, including
 cancellation and timeout. A compressed read releases its command permit after
 source retrieval, before LLM work. Each application captures its own immutable
 policy and independent counters; restart to change the policy. These quotas do
-not provide filesystem or tenant isolation. Unset or empty disables them;
+not authorize tenant membership. Unset or empty disables them;
 malformed values, booleans, fractional values, and
 nonpositive capacities fail configuration validation.
 
@@ -273,8 +333,8 @@ responses; credentials are redacted from configuration errors.
 
 The multi-stage image uses `python:3.15.2-slim`, installs locked production
 dependencies, and copies the Crystalline v0.31.0 binary from its official
-multi-architecture image pinned by digest. It runs HTTP and the supervised
-Crystalline daemon as a non-root user. Copy `.env.example` to `.env`
+multi-architecture image pinned by digest. It runs HTTP and lazily supervised
+workspace Crystalline daemons as a non-root user. Copy `.env.example` to `.env`
 and set `MARABRAIN_BEARER_SECRET` to a generated secret as described above, then run:
 
 ```sh
@@ -298,14 +358,18 @@ and must be readable by UID/GID 65532. Host credential paths must not contain co
 Docker administrators can inspect container environment variables; keep
 access to the Docker daemon restricted.
 
-Crystalline's own HTTP listener is disabled. Its configuration, database, control
-socket, and model cache live under `/data`, mounted from the named Docker volume
-`marabrain-data`. This volume survives container replacement; back it up before
-removing it. Existing volumes must be writable by UID/GID 65532. A managed server
-requires exclusive HOME/XDG paths; do not share the volume with another running
-engine or managed server. On first startup,
-Crystalline may download its embedding model; subsequent starts reuse the cache.
-Health checks engine and store responsiveness, not embedding-model readiness or
+Crystalline's own HTTP listener is disabled. Each workspace's configuration, database,
+control socket, domains, registry, and model cache live in a separate storage tree.
+The default root is `/data/state/marabrain/workspaces`, beneath `/data`, mounted from
+the named Docker volume `marabrain-data`. Keep any custom container workspace root
+under the persistent mount if its data must survive replacement. This volume survives
+container replacement; back it up before removing it. Existing volumes must be writable
+by UID/GID 65532. A managed server requires exclusive workspace HOME/XDG paths; do not
+share the volume with another running engine or managed server. On first activation,
+each workspace's Crystalline daemon may download its embedding model; subsequent
+activations reuse that workspace's cache. Model storage and daemon memory grow with
+activated workspaces. Shutdown reaps owned daemons and preserves data. Health checks
+all activated engines within one total deadline, not embedding-model readiness or
 semantic-search quality. See the upstream [deployment guide](https://github.com/jordiboehme/crystalline/blob/v0.31.0/docs/deployment.md)
 for offline model provisioning.
 
@@ -328,23 +392,26 @@ both nonempty. Files must be readable by UID/GID 65532 and contain a nonempty
 UTF-8 value without embedded line breaks or NUL; one terminal LF or CRLF is
 removed. Values are resolved at startup, so restart after rotating a file. File
 contents are not placed in Docker arguments, configured environment, or YAML;
-the managed Python process supplies the embedding key to its daemon environment.
+the managed Python process supplies the embedding key to each workspace's daemon environment.
 
-Before starting Crystalline, the container sends a small embedding request and
-checks its response and vector length. Invalid settings, authentication failures,
-unreachable providers, and mismatched dimensions stop startup. Crystalline does
+During each workspace activation, before starting its managed Crystalline daemon,
+bootstrap sends a small embedding request and checks its response and vector length.
+Provider configuration and bootstrap errors that previously stopped engine startup
+now surface on the first workspace activation, including authentication failures,
+unreachable providers, and mismatched dimensions. Crystalline does
 not support a `dimensions` request field, so choose a provider or model that
 already returns the expected vector length.
 
-After the check succeeds, startup merges the provider settings into
-`/data/config/crystalline/config.yaml`, preserving unrelated settings and domains.
+After the check succeeds, activation merges provider settings into that workspace's
+own Crystalline configuration, preserving its unrelated settings and domains.
+It never rewrites the base `/data/config/crystalline/config.yaml` or copies base configuration.
 The file stores the API key's environment variable name, never its value. The
 remote provider avoids the default Granite embedding-model download. Restart the
-container after changing these variables; the startup check does not continuously
-monitor the provider, and MCP health continues to check the Crystalline daemon.
+container after changing these variables; the activation check does not continuously
+monitor the provider, and MCP health checks only activated Crystalline engines.
 
-Leaving all embedding variables unset or empty preserves the existing Crystalline
-configuration and skips the remote-provider check. A fresh volume then uses the
+Leaving all embedding variables unset or empty preserves each workspace's existing
+Crystalline configuration and skips the remote-provider check. A fresh workspace uses the
 default local model. Changing providers or models does not automatically migrate
 existing vectors; follow Crystalline's indexing guidance before reusing an index
 with a different embedding space.
@@ -366,8 +433,8 @@ settings are separate from embedding settings; an embedding model cannot generat
 | `LLM_MAX_INPUT_TOKENS` | `256000` | Claude Agent SDK's assumed context window; OpenAI uses the selected model's context window |
 | `LLM_MAX_TOKENS` | `32768` | Maximum generated output tokens |
 | `LLM_TIMEOUT_SECONDS` | `60` | Provider request timeout in seconds |
-| `LLM_COMPRESSION_CACHE_MAX_ENTRIES` | unset (disabled) | Positive integer retained entry limit applied independently to every resolved domain; requires the byte limit |
-| `LLM_COMPRESSION_CACHE_MAX_BYTES` | unset (disabled) | Positive integer retained compressed UTF-8 payload limit applied independently to every resolved domain; requires the entry limit |
+| `LLM_COMPRESSION_CACHE_MAX_ENTRIES` | unset (disabled) | Positive integer retained entry limit applied independently to every workspace and resolved domain pair; requires the byte limit |
+| `LLM_COMPRESSION_CACHE_MAX_BYTES` | unset (disabled) | Positive integer retained compressed UTF-8 payload limit applied independently to every workspace and resolved domain pair; requires the entry limit |
 
 For OpenAI, for example, set `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4.1-mini`,
 and `LLM_PROVIDER_URL=https://api.openai.com/v1`, then supply your `LLM_API_KEY`.
@@ -390,18 +457,19 @@ structured result.
 
 To reuse compressed output, set, for example,
 `LLM_COMPRESSION_CACHE_MAX_ENTRIES=64` and `LLM_COMPRESSION_CACHE_MAX_BYTES=1048576`.
-Every resolved domain independently uses these same limits to cache output and
-coalesce matching concurrent provider requests. Every caller still resolves and
-authorizes its domain, reads the source,
-and validates its identity before reuse. A hit requires the same resolved domain,
+Every workspace and resolved domain pair independently uses these same limits to cache
+output and coalesce matching concurrent provider requests. Cache keys, shared in-flight
+requests, and quota buckets include both workspace and resolved domain. Every caller
+still resolves its domain, passes domain admission, reads the source,
+and validates its identity before reuse. A hit requires the same workspace, resolved domain,
 permalink, exact query, and full source content under the application's captured
 LLM settings. Each response uses that caller's fresh metadata and source checksum.
-Aliases share only their resolved domain's entries; plain reads and search remain
+Aliases share only their resolved domain's entries within that workspace; plain reads and search remain
 unchanged. Leaving both limits unset or empty disables caching and coalescing.
 Otherwise both must be positive integers; a missing partner, malformed values,
 and nonpositive, boolean, or fractional limits fail validation.
 
-Each domain evicts least recently used entries to satisfy both limits. `LLM_COMPRESSION_CACHE_MAX_BYTES`
+Each workspace and domain pair evicts least recently used entries to satisfy both limits. `LLM_COMPRESSION_CACHE_MAX_BYTES`
 bounds only retained compressed UTF-8 payload, excluding cache keys, object
 overhead, and in-flight provider data. Oversized results are returned without being
 cached; failures and cancelled work are never cached. Cancelling one caller leaves
@@ -410,11 +478,11 @@ server shuts down, owned work is cancelled and drained; cleanup can outlast the
 provider timeout and does not guarantee cancellation at the remote provider.
 Late callers do not reset that timeout, and failures never fall back to source content.
 
-Cached output and shared requests stay private to one application and resolved
+Cached output and shared requests stay private to one application, workspace, and resolved
 domain. Cached data is held in process memory, cleared on shutdown, and never
 persisted. Restart to apply policy changes. A cache miss still sends the full source
 content and query to the configured LLM provider; enabling caching does not change
-that disclosure or provide tenant isolation.
+that disclosure or replace backend tenant authorization.
 
 The launcher exports and forwards every `LLM_*` variable listed above to both the
 configuration preflight and runtime container. Settings are parsed at startup; restart
