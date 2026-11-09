@@ -8,6 +8,7 @@ from pathlib import Path
 
 import anyio
 import pytest
+from anyio.abc import TaskStatus
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKError, CLIConnectionError, ResultMessage, ThinkingBlock
 from claude_agent_sdk.types import Message
 from fastmcp.exceptions import ToolError
@@ -33,6 +34,10 @@ class ClaudeScript:
     exhausted: bool = False
     wait: bool = False
     error: ClaudeSDKError | None = None
+    started: anyio.Event = field(default_factory=anyio.Event)
+    cleanup_started: anyio.Event = field(default_factory=anyio.Event)
+    cleanup_release: anyio.Event = field(default_factory=anyio.Event)
+    hold_cleanup: bool = False
 
 
 @pytest.fixture
@@ -57,6 +62,7 @@ def claude(monkeypatch: pytest.MonkeyPatch) -> ClaudeScript:
 
         async def receive_response(self) -> AsyncGenerator[Message, None]:
             """Yield SDK messages until completion, error, or cancellation."""
+            state.started.set()
             for message in state.messages:
                 yield message
             if state.error is not None:
@@ -67,6 +73,9 @@ def claude(monkeypatch: pytest.MonkeyPatch) -> ClaudeScript:
 
         async def disconnect(self) -> None:
             """Exercise awaited cleanup even after cancellation."""
+            state.cleanup_started.set()
+            if state.hold_cleanup:
+                await state.cleanup_release.wait()
             await anyio.lowlevel.checkpoint()
             state.closed = True
 
@@ -124,6 +133,7 @@ async def test_claude_sdk_contract(claude: ClaudeScript, monkeypatch: pytest.Mon
         [claude_result(None)],
         [claude_result({})],
         [claude_result({"context": " "})],
+        [claude_result({"context": "\ud800"})],
         [claude_result({"context": 3})],
         [claude_result({"context": "partial"}, "error_max_turns")],
         [claude_result({"context": "refused"}, error=True)],
@@ -136,6 +146,34 @@ async def test_invalid_claude_results_are_masked(claude: ClaudeScript, claude_se
     with pytest.raises(ToolError, match="^LLM compression failed\\.$"):
         await compress_memory(claude_settings, "query", "content")
     assert claude.closed and claude.options is not None and claude.options.cwd is not None
+    assert not Path(claude.options.cwd).exists()
+
+
+async def test_claude_cancellation_drains_disconnect_and_temp_cleanup(claude: ClaudeScript, claude_settings: LLMSettings) -> None:
+    """Finish shielded disconnect before deleting temporary state and returning cancellation."""
+    claude.messages, claude.wait, claude.hold_cleanup = [], True, True
+    stopped = anyio.Event()
+
+    async def read(*, task_status: TaskStatus[anyio.CancelScope]) -> None:
+        """Signal caller completion after the provider cancellation propagates."""
+        with anyio.CancelScope() as scope:
+            task_status.started(scope)
+            await compress_memory(claude_settings, "query", "content")
+        stopped.set()
+
+    with anyio.fail_after(5):
+        async with anyio.create_task_group() as tasks:
+            try:
+                scope = await tasks.start(read)
+                await claude.started.wait()
+                scope.cancel()
+                await claude.cleanup_started.wait()
+                await anyio.wait_all_tasks_blocked()
+                assert not stopped.is_set() and not claude.closed
+                assert claude.options is not None and claude.options.cwd is not None and Path(claude.options.cwd).is_dir()
+            finally:
+                claude.cleanup_release.set()
+    assert stopped.is_set() and claude.closed and claude.options is not None and claude.options.cwd is not None
     assert not Path(claude.options.cwd).exists()
 
 
