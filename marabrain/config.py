@@ -48,13 +48,14 @@ class Settings(BaseSettings):
     operation_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
     max_transient_processes: Annotated[int, Field(ge=2)] | None = None
     max_capture_bytes: Annotated[int, Field(gt=0)] | None = None
+    max_total_capture_bytes: Annotated[int, Field(strict=True, gt=0)] | None = None
     max_resident_workspaces: Annotated[int, Field(strict=True, gt=0)] | None = None
     engine_mode: EngineMode = EngineMode.EXTERNAL
     engine_startup_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 30.0
     workspace_root: Path | None = None
     llm: LLMSettings = Field(default_factory=LLMSettings)
 
-    @field_validator("domain_command_capacity", "max_resident_workspaces", mode="before")
+    @field_validator("domain_command_capacity", "max_resident_workspaces", "max_total_capture_bytes", mode="before")
     @classmethod
     def parse_optional_capacity(cls, value: object) -> int | None:
         """Parse an optional strict positive capacity without exposing rejected input."""

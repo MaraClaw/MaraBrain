@@ -36,42 +36,50 @@ def startup_remaining(deadline: float | None) -> float | None:
     return remaining
 
 
-async def run_startup_command(command: list[str], context: EngineContext, *, deadline: float | None = None, initialization: bool = False) -> bytearray:
-    """Capture one startup command and reap its child even when cancellation crosses launch."""
+async def run_startup_command(command: list[str], context: EngineContext, *, deadline: float | None = None, initialization: bool = False) -> StdoutCapture:
+    """Transfer captured output to its consumer only after owned child and stream cleanup."""
     await anyio.lowlevel.checkpoint()
-    with anyio.fail_after(startup_remaining(deadline)), context.transients.admit(control=True):
-        output = StdoutCapture(context.transients.max_capture_bytes)
-        with anyio.CancelScope(shield=True) as launch:
-            process = await anyio.open_process(
-                command, stdin=subprocess.DEVNULL, stderr=sys.stderr if initialization else subprocess.DEVNULL, env=context.environment
-            )
-            try:
-                launch.shield = False
+    output = StdoutCapture(context.transients.max_capture_bytes, context.transients.capture_budget)
+    delivered = False
+    try:
+        with anyio.fail_after(startup_remaining(deadline)), context.transients.admit(control=True):
+            with anyio.CancelScope(shield=True) as launch:
+                process = await anyio.open_process(
+                    command, stdin=subprocess.DEVNULL, stderr=sys.stderr if initialization else subprocess.DEVNULL, env=context.environment
+                )
+                try:
+                    launch.shield = False
+                    await anyio.lowlevel.checkpoint()
+                    startup_remaining(deadline)
+                    assert process.stdout is not None
+                    while True:
+                        try:
+                            output.append(await process.stdout.receive(READ_BYTES))
+                        except anyio.EndOfStream:
+                            break
+                    code = await process.wait()
+                    if code != 0:
+                        raise subprocess.CalledProcessError(code, command)
+                finally:
+                    await stop_process(process)
                 await anyio.lowlevel.checkpoint()
-                startup_remaining(deadline)
-                assert process.stdout is not None
-                while True:
-                    try:
-                        output.append(await process.stdout.receive(READ_BYTES))
-                    except anyio.EndOfStream:
-                        break
-                code = await process.wait()
-                if code != 0:
-                    raise subprocess.CalledProcessError(code, command)
-            finally:
-                await stop_process(process)
-    return output.finish()
+        delivered = True
+        return output
+    finally:
+        if not delivered:
+            output.close()
 
 
 async def probe_engine(timeout: float, *, context: EngineContext | None = None, deadline: float | None = None) -> bool:
     """Return whether the status command succeeds within its allotted duration."""
     try:
         command_deadline = anyio.current_time() + timeout
-        await run_startup_command(
+        output = await run_startup_command(
             ["crystalline", "ctl", "status"],
             context if context is not None else EngineContext.capture(),
             deadline=command_deadline if deadline is None else min(deadline, command_deadline),
         )
+        output.close()
     except OSError, subprocess.CalledProcessError, TimeoutError:
         return False
     return True
@@ -113,7 +121,8 @@ async def probe_owned_engine(process: Process, timeout: float, *, context: Engin
         )
     except OSError, subprocess.CalledProcessError, TimeoutError:
         return False
-    identity = EngineStatus.model_validate_json(status)
+    with status as raw:
+        identity = EngineStatus.model_validate_json(raw)
     if identity.pid != process.pid:
         raise EngineLifecycleError("Managed mode refuses a competing Crystalline daemon.")
     await anyio.lowlevel.checkpoint()
@@ -166,7 +175,8 @@ async def managed_engine(settings: Settings, *, context: EngineContext | None = 
         deadline=deadline,
         initialization=True,
     )
-    overlay = TypeAdapter(dict[str, str]).validate_json(initialized, strict=True)
+    with initialized as raw:
+        overlay = TypeAdapter(dict[str, str]).validate_json(raw, strict=True)
     await anyio.lowlevel.checkpoint()
     startup_remaining(deadline)
     readiness_deadline = anyio.current_time() + settings.engine_startup_timeout_seconds

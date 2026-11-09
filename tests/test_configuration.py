@@ -110,12 +110,13 @@ def test_bad_domains_rejected(monkeypatch: pytest.MonkeyPatch, value: str) -> No
 
 
 @pytest.mark.parametrize("value,expected", [(None, None), ("", None), ("1", 1), ("2", 2), ("65536", 65536)])
-def test_domain_command_capacity_parses_optional_integer(monkeypatch: pytest.MonkeyPatch, value: str | None, expected: int | None) -> None:
+@pytest.mark.parametrize("name", ["domain_command_capacity", "max_total_capture_bytes"])
+def test_strict_limit_parses_optional_integer(monkeypatch: pytest.MonkeyPatch, value: str | None, expected: int | None, name: str) -> None:
     """Parse one positive capacity while leaving absent or empty values disabled."""
-    monkeypatch.delenv("MARABRAIN_DOMAIN_COMMAND_CAPACITY", raising=False)
+    monkeypatch.delenv(f"MARABRAIN_{name.upper()}", raising=False)
     if value is not None:
-        monkeypatch.setenv("MARABRAIN_DOMAIN_COMMAND_CAPACITY", value)
-    assert Settings().domain_command_capacity == expected
+        monkeypatch.setenv(f"MARABRAIN_{name.upper()}", value)
+    assert getattr(Settings(), name) == expected
 
 
 @pytest.mark.parametrize(
@@ -139,23 +140,25 @@ def test_domain_command_capacity_parses_optional_integer(monkeypatch: pytest.Mon
         '{"private-secret": 2}',
     ],
 )
-def test_domain_command_capacity_rejects_redacted_environment_values(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+@pytest.mark.parametrize("name", ["domain_command_capacity", "max_total_capture_bytes"])
+def test_strict_limit_rejects_redacted_environment_values(monkeypatch: pytest.MonkeyPatch, value: str, name: str) -> None:
     """Reject malformed or nonpositive scalars without exposing rejected input."""
-    monkeypatch.setenv("MARABRAIN_DOMAIN_COMMAND_CAPACITY", value)
+    monkeypatch.setenv(f"MARABRAIN_{name.upper()}", value)
     with pytest.raises(ValidationError) as invalid:
         Settings()
     assert "private-secret" not in str(invalid.value)
     assert "invalid-secret" not in str(invalid.value)
     assert "input_value" not in str(invalid.value)
-    assert invalid.value.errors()[0]["loc"] == ("domain_command_capacity",)
+    assert invalid.value.errors()[0]["loc"] == (name,)
 
 
 @pytest.mark.parametrize("value", [True, False, 2.5, 1.0, 0, -1, {"notes": 2}, [], "invalid-secret"])
-def test_domain_command_capacity_rejects_invalid_constructor_values(value: JsonValue) -> None:
+@pytest.mark.parametrize("name", ["domain_command_capacity", "max_total_capture_bytes"])
+def test_strict_limit_rejects_invalid_constructor_values(value: JsonValue, name: str) -> None:
     """Reject boolean and float coercion as well as invalid scalar constructor values."""
     with pytest.raises(ValidationError) as invalid:
-        Settings.model_validate({"domain_command_capacity": value})
-    assert invalid.value.errors()[0]["loc"] == ("domain_command_capacity",)
+        Settings.model_validate({name: value})
+    assert invalid.value.errors()[0]["loc"] == (name,)
     assert "input_value" not in str(invalid.value)
 
 

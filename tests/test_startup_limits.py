@@ -49,11 +49,14 @@ else:
 
 
 @pytest.mark.parametrize("phase", ["probe", "initialization", "readiness"])
-async def test_startup_overflow_fails_before_serving_and_reaps_owned_children(runtime: Path, monkeypatch: pytest.MonkeyPatch, phase: str) -> None:
+@pytest.mark.parametrize("aggregate", [None, 64])
+async def test_startup_overflow_fails_before_serving_and_reaps_owned_children(
+    runtime: Path, monkeypatch: pytest.MonkeyPatch, phase: str, aggregate: int | None
+) -> None:
     """Propagate overflow at every captured startup owner without treating it as daemon absence."""
     (runtime / "crystalline").write_text(f"#!{sys.executable}\n" + LIMIT_ENGINE)
     monkeypatch.setenv("OVERFLOW_PHASE", phase)
-    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=64)
+    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=None if aggregate else 64, max_total_capture_bytes=aggregate)
     original = anyio.open_process
     initialized = False
 
@@ -86,6 +89,9 @@ async def test_startup_overflow_fails_before_serving_and_reaps_owned_children(ru
     assert (runtime / "owner").exists() == (phase == "readiness")
     assert "secret-payload" not in str(error.value)
     assert_reaped(runtime)
+    monkeypatch.setattr(anyio, "open_process", original)
+    with await run_startup_command([sys.executable, "-c", "print(' ' * 63)"], context) as raw:
+        assert len(raw) == 64
 
 
 async def test_control_admission_failure_prevents_preexisting_probe_and_initialization(runtime: Path) -> None:
@@ -95,7 +101,8 @@ async def test_control_admission_failure_prevents_preexisting_probe_and_initiali
         async with engine_lifecycle(Settings(), context=context):
             pytest.fail("Admission failure reached serving.")
     assert list(runtime.glob("child-*")) == []
-    assert await run_startup_command([sys.executable, "-c", "print('{}')"], context) == b"{}\n"
+    with await run_startup_command([sys.executable, "-c", "print('{}')"], context) as output:
+        assert output == b"{}\n"
 
 
 async def test_oversized_preexisting_probe_leaves_external_daemon_running(runtime: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,7 +112,7 @@ async def test_oversized_preexisting_probe_leaves_external_daemon_running(runtim
         try:
             await await_file(runtime / "owner")
             monkeypatch.setenv("OVERFLOW_PHASE", "readiness")
-            context = EngineContext.capture(max_capture_bytes=64)
+            context = EngineContext.capture(max_total_capture_bytes=64)
             with pytest.raises(CaptureLimitError):
                 async with engine_lifecycle(Settings(), context=context):
                     pytest.fail("Overflow adopted an external daemon.")
@@ -117,7 +124,10 @@ async def test_oversized_preexisting_probe_leaves_external_daemon_running(runtim
     assert_reaped(runtime)
 
 
-async def test_programmatic_application_limits_share_context_through_preparation_and_serving(runtime: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("aggregate", [None, 16])
+async def test_programmatic_application_limits_share_context_through_preparation_and_serving(
+    runtime: Path, monkeypatch: pytest.MonkeyPatch, aggregate: int | None
+) -> None:
     """Retain entry-time limits and environment while binding the same owners to the MCP tools."""
     (runtime / "crystalline").write_text(f"#!{sys.executable}\n" + LIMIT_ENGINE)
     settings = Settings(
@@ -125,7 +135,8 @@ async def test_programmatic_application_limits_share_context_through_preparation
         bearer_secret=SecretStr("s" * 32),
         engine_mode=EngineMode.EXTERNAL,
         max_transient_processes=2,
-        max_capture_bytes=16,
+        max_capture_bytes=16 if aggregate is None else 4096,
+        max_total_capture_bytes=aggregate,
     )
     prepared: EngineContext | None = None
     served = False
@@ -136,8 +147,10 @@ async def test_programmatic_application_limits_share_context_through_preparation
         nonlocal prepared
         assert context is not None
         prepared = context
-        assert await run_startup_command([sys.executable, "-c", "print('{}')"], context, deadline=deadline) == b"{}\n"
+        with await run_startup_command([sys.executable, "-c", "print('{}')"], context, deadline=deadline) as output:
+            assert output == b"{}\n"
         monkeypatch.setenv("MARABRAIN_MAX_CAPTURE_BYTES", "4096")
+        monkeypatch.setenv("MARABRAIN_MAX_TOTAL_CAPTURE_BYTES", "4096")
         monkeypatch.setenv("MARABRAIN_MAX_TRANSIENT_PROCESSES", "10")
         monkeypatch.setenv("PATH", str(runtime / "missing"))
         yield

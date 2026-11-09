@@ -55,7 +55,8 @@ async def test_data_saturation_reserves_one_immediate_control_slot_and_independe
 
     async def control_request() -> None:
         """Exercise the control owner while data children occupy all data capacity."""
-        assert await run_startup_command([str(cli / "crystalline")], context) == b"{}\n"
+        with await run_startup_command([str(cli / "crystalline")], context) as output:
+            assert output == b"{}\n"
         completed.append(True)
         if len(completed) == 4:
             done.set()
@@ -85,7 +86,8 @@ async def test_data_saturation_reserves_one_immediate_control_slot_and_independe
     assert not [worker for worker in threading.enumerate() if worker.name == "marabrain-cli"]
     (cli / "crystalline").write_text(f"#!{sys.executable}\nprint('{{}}')\n")
     assert await run_json(["read"], context=context) == {}
-    assert await run_startup_command([str(cli / "crystalline")], context) == b"{}\n"
+    with await run_startup_command([str(cli / "crystalline")], context) as output:
+        assert output == b"{}\n"
 
 
 async def test_control_slot_remains_owned_until_process_close_completes(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,7 +106,8 @@ async def test_control_slot_remains_owned_until_process_close_completes(cli: Pat
 
     async def request() -> None:
         """Own a control command through its final stream cleanup barrier."""
-        assert await run_startup_command([str(cli / "crystalline")], context) == b"{}\n"
+        with await run_startup_command([str(cli / "crystalline")], context) as output:
+            assert output == b"{}\n"
 
     monkeypatch.setattr(lifecycle, "stop_process", finish_close)
     with anyio.fail_after(10):
@@ -116,7 +119,8 @@ async def test_control_slot_remains_owned_until_process_close_completes(cli: Pat
                     await run_startup_command([str(cli / "crystalline")], context)
             finally:
                 release.set()
-    assert await run_startup_command([str(cli / "crystalline")], context) == b"{}\n"
+    with await run_startup_command([str(cli / "crystalline")], context) as output:
+        assert output == b"{}\n"
 
 
 @pytest.mark.parametrize("completion", ["success", "cancel", "timeout"])

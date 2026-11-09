@@ -28,7 +28,7 @@ async def test_mcp_cancellation_reaps_running_command(cli: Path) -> None:
     listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
     port = listener.extra(SocketAttribute.local_port)
     executable = cli / "crystalline"
-    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=1024)
+    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=1024, max_total_capture_bytes=1024)
     server = create_server(Settings(), context=context)
     send, receive = anyio.create_memory_object_stream[int](1)
 
@@ -165,7 +165,7 @@ async def test_cancellation_during_launch_reaps_child_before_return(cli: Path, m
     launched, release = threading.Event(), threading.Event()
     pids: list[int] = []
     original = subprocess.Popen
-    context = EngineContext.capture(max_transient_processes=2 if limited_by == "global" else 3, max_capture_bytes=1024)
+    context = EngineContext.capture(max_transient_processes=2 if limited_by == "global" else 3, max_capture_bytes=1024, max_total_capture_bytes=1024)
     server = create_server(Settings(domain_command_capacity=1 if limited_by == "domain" else None), context=context)
 
     class GatedLaunch(original[bytes]):

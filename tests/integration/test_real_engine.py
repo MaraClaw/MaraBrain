@@ -15,6 +15,9 @@ from fastmcp.client.transports import StdioTransport
 from mcp.types import TextContent
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 
+from marabrain.engine_context import EngineContext
+from marabrain.workspace_storage import prepare_workspace
+
 
 class EmbeddingsStatus(BaseModel):
     """Parse the native readiness fields needed to rule out text-only search."""
@@ -72,6 +75,9 @@ async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFac
         "MARABRAIN_ENGINE_MODE": "managed",
         "MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS": "120",
         "MARABRAIN_STARTUP_TIMEOUT_SECONDS": "120",
+        "MARABRAIN_WORKSPACE_ROOT": str(root / "w"),
+        "MARABRAIN_MAX_RESIDENT_WORKSPACES": "1",
+        "MARABRAIN_MAX_TOTAL_CAPTURE_BYTES": "1048576",
     }
     for directory in ("h", "c", "k", "d", "r", "t"):
         (root / directory).mkdir(mode=0o700)
@@ -80,6 +86,14 @@ async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFac
         version = await run_cli(["--version"], environment)
         assert version.stdout.decode().splitlines()[0] == "crystalline 0.31.0"
         await run_cli(["--json", "model", "download"], environment, timeout=240)
+        workspace_id = "integration-primary"
+        contexts: dict[str, EngineContext] = {}
+        for identity in (workspace_id, "integration-pressure"):
+            prepare_workspace(identity, root / "w")
+            context = EngineContext(environment, root, "integration-model-download").for_workspace(identity, root / "w")
+            shutil.copytree(root / "k", context.environment["XDG_CACHE_HOME"], dirs_exist_ok=True)
+            contexts[identity] = context
+        workspace_environment = dict(contexts[workspace_id].environment)
 
         transport = StdioTransport(
             command=sys.executable,
@@ -94,11 +108,12 @@ async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFac
             assert health == {"status": "ok", "version": "0.4.2"}
 
             target = {"domain": "integration", "permalink": "lunar-greenhouse"}
+            request_target = {"workspace_id": workspace_id, **target}
             content = "The lunar greenhouse grows tomatoes using hydroponic nutrient solution."
             created = payload(
                 await client.call_tool(
                     "create_memory",
-                    {"domain": "integration", "title": "Lunar greenhouse", "content": content, "tags": ["integration"]},
+                    {"workspace_id": workspace_id, "domain": "integration", "title": "Lunar greenhouse", "content": content, "tags": ["integration"]},
                 )
             )
             assert created == {
@@ -109,16 +124,16 @@ async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFac
                 "title": "Lunar greenhouse",
                 "type": "engram",
             }
-            original = payload(await client.call_tool("read_memory", target))
+            original = payload(await client.call_tool("read_memory", request_target))
             original_content = original["content"]
             assert isinstance(original_content, str)
             assert content in original_content
             assert original["url"] == "crystalline://integration/lunar-greenhouse"
 
             addition = "Harvest the ripe tomatoes on Friday."
-            edited = payload(await client.call_tool("edit_memory", {**target, "operation": {"type": "append", "content": addition}}))
+            edited = payload(await client.call_tool("edit_memory", {**request_target, "operation": {"type": "append", "content": addition}}))
             assert edited == {**target, "operation": "append", "path": "lunar-greenhouse.md"}
-            updated = payload(await client.call_tool("read_memory", target))
+            updated = payload(await client.call_tool("read_memory", request_target))
             updated_content = updated["content"]
             assert isinstance(updated_content, str)
             assert content in updated_content and addition in updated_content
@@ -126,18 +141,20 @@ async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFac
 
             with anyio.fail_after(120):
                 while True:
-                    status = EngineStatus.model_validate_json((await run_cli(["--json", "ctl", "status"], environment)).stdout)
+                    status = EngineStatus.model_validate_json((await run_cli(["--json", "ctl", "status"], workspace_environment)).stdout)
                     if status.embeddings.provider:
                         break
                     await anyio.sleep(0.2)
-                await run_cli(["--json", "ctl", "sync", "--domain", "integration", "--embed"], environment, timeout=30)
+                await run_cli(["--json", "ctl", "sync", "--domain", "integration", "--embed"], workspace_environment, timeout=30)
                 while True:
-                    status = EngineStatus.model_validate_json((await run_cli(["--json", "ctl", "status"], environment)).stdout)
+                    status = EngineStatus.model_validate_json((await run_cli(["--json", "ctl", "status"], workspace_environment)).stdout)
                     if status.embeddings.hybrid_available and status.embeddings.embedded_chunks == status.embeddings.total_chunks > 0:
                         break
                     await anyio.sleep(0.2)
 
-            found = payload(await client.call_tool("search_memories", {"query": "hydroponic tomatoes", "domains": ["integration"]}))
+            found = payload(
+                await client.call_tool("search_memories", {"workspace_id": workspace_id, "query": "hydroponic tomatoes", "domains": ["integration"]})
+            )
             assert found["mode"] == "hybrid", found
             assert found["count"] == 1
             hits = found["hits"]
@@ -146,9 +163,27 @@ async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFac
             assert isinstance(hit, dict)
             assert hit["domain"] == target["domain"] and hit["permalink"] == target["permalink"]
 
-            deleted = payload(await client.call_tool("delete_memory", target))
+            await client.call_tool(
+                "create_memory",
+                {"workspace_id": "integration-pressure", "domain": "integration", "title": "Pressure", "content": "Retire the idle primary daemon."},
+            )
+            with pytest.raises(ProcessLookupError):
+                os.kill(status.pid, 0)
+            pressure_status = EngineStatus.model_validate_json(
+                (await run_cli(["--json", "ctl", "status"], dict(contexts["integration-pressure"].environment))).stdout
+            )
+            restored = payload(await client.call_tool("read_memory", request_target))
+            assert restored["content"] == updated["content"]
+            assert restored["checksum"] == updated["checksum"]
+            with pytest.raises(ProcessLookupError):
+                os.kill(pressure_status.pid, 0)
+            previous_pid = status.pid
+            status = EngineStatus.model_validate_json((await run_cli(["--json", "ctl", "status"], workspace_environment)).stdout)
+            assert status.pid != previous_pid
+
+            deleted = payload(await client.call_tool("delete_memory", request_target))
             assert deleted == {**target, "deleted": True, "path": "lunar-greenhouse.md"}
-            missing = await client.call_tool("read_memory", target, raise_on_error=False)
+            missing = await client.call_tool("read_memory", request_target, raise_on_error=False)
             assert missing.is_error
             assert missing.structured_content is None
             assert len(missing.content) == 1
