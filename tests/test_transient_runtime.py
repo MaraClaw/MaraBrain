@@ -205,7 +205,7 @@ async def test_saturated_domain_keeps_health_and_other_domains_available(cli: Pa
                     with pytest.raises(ToolError, match="domain command capacity is exhausted"):
                         await client.call_tool("search_memories", {"query": "r", "domains": ["notes"]})
                     assert len(calls(cli)) == 1
-                    assert (await client.call_tool("health")).structured_content == {"status": "ok", "version": "0.4.1"}
+                    assert (await client.call_tool("health")).structured_content == {"status": "ok", "version": "0.4.2"}
                     assert (await client.call_tool("read_memory", {"domain": "other", "permalink": "one"})).structured_content == RECEIPT
                     assert len(calls(cli)) == 3
                 finally:

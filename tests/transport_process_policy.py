@@ -131,7 +131,7 @@ async def assert_overflow_reaped[T: ClientTransport](client: Client[T], probe: P
     finally:
         marker.unlink(missing_ok=True)
     result = await client.call_tool("health" if health else "read_memory", {} if health else {"domain": "notes", "permalink": "after"})
-    assert result.structured_content == ({"status": "ok", "version": "0.4.1"} if health else RECEIPT)
+    assert result.structured_content == ({"status": "ok", "version": "0.4.2"} if health else RECEIPT)
     assert len(probe.launches()) == before + 2
 
 
@@ -157,7 +157,7 @@ async def assert_transport_process_policy[T: ClientTransport](client: Client[T],
             assert probe.launches() == before
             with anyio.fail_after(1):
                 health = await client.call_tool("health", {})
-            assert health.structured_content == {"status": "ok", "version": "0.4.1"}
+            assert health.structured_content == {"status": "ok", "version": "0.4.2"}
             assert len(probe.launches()) == len(before) + 1
             assert probe.launches()[-1].argv == ("ctl", "status")
             os.kill(child.pid, 0)
