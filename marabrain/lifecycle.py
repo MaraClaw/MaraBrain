@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 from marabrain.config import EngineMode, Settings
 from marabrain.engine_context import EngineContext
+from marabrain.transient import READ_BYTES, StdoutCapture
 
 
 class EngineLifecycleError(RuntimeError):
@@ -35,11 +36,11 @@ def startup_remaining(deadline: float | None) -> float | None:
     return remaining
 
 
-async def run_startup_command(command: list[str], context: EngineContext, *, deadline: float | None = None, initialization: bool = False) -> bytes:
+async def run_startup_command(command: list[str], context: EngineContext, *, deadline: float | None = None, initialization: bool = False) -> bytearray:
     """Capture one startup command and reap its child even when cancellation crosses launch."""
-    output = bytearray()
     await anyio.lowlevel.checkpoint()
-    with anyio.fail_after(startup_remaining(deadline)):
+    with anyio.fail_after(startup_remaining(deadline)), context.transients.admit(control=True):
+        output = StdoutCapture(context.transients.max_capture_bytes)
         with anyio.CancelScope(shield=True) as launch:
             process = await anyio.open_process(
                 command, stdin=subprocess.DEVNULL, stderr=sys.stderr if initialization else subprocess.DEVNULL, env=context.environment
@@ -49,14 +50,17 @@ async def run_startup_command(command: list[str], context: EngineContext, *, dea
                 await anyio.lowlevel.checkpoint()
                 startup_remaining(deadline)
                 assert process.stdout is not None
-                async for chunk in process.stdout:
-                    output += chunk
+                while True:
+                    try:
+                        output.append(await process.stdout.receive(READ_BYTES))
+                    except anyio.EndOfStream:
+                        break
                 code = await process.wait()
                 if code != 0:
                     raise subprocess.CalledProcessError(code, command)
             finally:
                 await stop_process(process)
-    return bytes(output)
+    return output.finish()
 
 
 async def probe_engine(timeout: float, *, context: EngineContext | None = None, deadline: float | None = None) -> bool:
@@ -128,7 +132,7 @@ async def cancel_on_signal(scope: anyio.CancelScope, signals: AsyncIterator[int]
 @asynccontextmanager
 async def engine_lifecycle(settings: Settings, *, context: EngineContext | None = None, deadline: float | None = None) -> AsyncGenerator[None]:
     """Start and supervise an engine only when managed mode is explicitly selected."""
-    bound_context = context if context is not None else EngineContext.capture()
+    bound_context = context if context is not None else EngineContext.for_application(settings)
     mode = settings.engine_mode
     match mode:
         case EngineMode.EXTERNAL:
@@ -145,7 +149,7 @@ async def engine_lifecycle(settings: Settings, *, context: EngineContext | None 
 async def managed_engine(settings: Settings, *, context: EngineContext | None = None, deadline: float | None = None) -> AsyncGenerator[None]:
     """Initialize and retain one daemon under the exclusive HOME/XDG precondition."""
 
-    bound_context = context if context is not None else EngineContext.capture()
+    bound_context = context if context is not None else EngineContext.for_application(settings)
     startup_remaining(deadline)
     if await probe_engine(settings.health_timeout_seconds, context=bound_context, deadline=deadline):
         raise EngineLifecycleError("Managed mode refuses a responsive preexisting Crystalline daemon.")

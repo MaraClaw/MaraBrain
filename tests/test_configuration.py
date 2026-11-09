@@ -50,6 +50,54 @@ def test_optional_budgets_are_independent(
     assert (settings.startup_timeout_seconds, settings.operation_timeout_seconds) == expected
 
 
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ((None, None), (None, None)),
+        (("", ""), (None, None)),
+        (("2", ""), (2, None)),
+        (("", "1"), (None, 1)),
+        (("7", "65536"), (7, 65536)),
+    ],
+)
+def test_optional_limits_are_independent(
+    monkeypatch: pytest.MonkeyPatch, values: tuple[str | None, str | None], expected: tuple[int | None, int | None]
+) -> None:
+    """Parse independent integer limits while leaving absent or empty limits disabled."""
+    for name, value in zip(("MAX_TRANSIENT_PROCESSES", "MAX_CAPTURE_BYTES"), values, strict=True):
+        monkeypatch.delenv(f"MARABRAIN_{name}", raising=False)
+        if value is not None:
+            monkeypatch.setenv(f"MARABRAIN_{name}", value)
+    settings = Settings()
+    assert (settings.max_transient_processes, settings.max_capture_bytes) == expected
+
+
+@pytest.mark.parametrize("name", ["MAX_TRANSIENT_PROCESSES", "MAX_CAPTURE_BYTES"])
+@pytest.mark.parametrize("value", ["0", "-1", "2.5", "nan", "inf", "invalid", " "])
+def test_bad_integer_limits_rejected(monkeypatch: pytest.MonkeyPatch, name: str, value: str) -> None:
+    """Reject nonpositive, fractional and malformed environment limits."""
+    monkeypatch.setenv(f"MARABRAIN_{name}", value)
+    with pytest.raises(ValidationError) as invalid:
+        Settings()
+    assert invalid.value.errors()[0]["loc"] == (name.lower(),)
+
+
+def test_transient_capacity_requires_two_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reject capacity that cannot reserve both data and control lanes."""
+    monkeypatch.setenv("MARABRAIN_MAX_TRANSIENT_PROCESSES", "1")
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+@pytest.mark.parametrize("name", ["max_transient_processes", "max_capture_bytes"])
+def test_programmatic_limits_reject_fractional_values(name: str) -> None:
+    """Reject fractional constructor values instead of truncating them."""
+    with pytest.raises(ValidationError) as invalid:
+        Settings.model_validate({name: 2.5})
+    assert invalid.value.errors()[0]["loc"] == (name,)
+    assert invalid.value.errors()[0]["type"] == "int_from_float"
+
+
 @pytest.mark.parametrize("value", ['["-bad"]', '[" spaced "]', '[""]', '["a\\nb"]'])
 def test_bad_domains_rejected(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
     """Reject configured domains that violate the memory domain contract."""

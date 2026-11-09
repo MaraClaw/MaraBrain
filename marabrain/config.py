@@ -45,14 +45,16 @@ class Settings(BaseSettings):
     command_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 30.0
     startup_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
     operation_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
+    max_transient_processes: Annotated[int, Field(ge=2)] | None = None
+    max_capture_bytes: Annotated[int, Field(gt=0)] | None = None
     engine_mode: EngineMode = EngineMode.EXTERNAL
     engine_startup_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 30.0
     llm: LLMSettings = Field(default_factory=LLMSettings)
 
-    @field_validator("startup_timeout_seconds", "operation_timeout_seconds", mode="before")
+    @field_validator("startup_timeout_seconds", "operation_timeout_seconds", "max_transient_processes", "max_capture_bytes", mode="before")
     @classmethod
-    def empty_total_budget(cls, value: float | str | None) -> float | str | None:
-        """Treat empty optional total budgets as disabled without accepting zero."""
+    def empty_optional_limit(cls, value: float | str | None) -> float | str | None:
+        """Treat empty optional budgets and limits as disabled without accepting zero."""
         return None if value == "" else value
 
     @field_validator("bearer_secret_file", mode="before")

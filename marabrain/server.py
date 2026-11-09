@@ -24,6 +24,7 @@ from marabrain.engine_context import EngineContext
 from marabrain.lifecycle import application_signals, engine_lifecycle, probe_engine, startup_remaining
 from marabrain.lifecycle_stdio import BufferedInput, CancellableInput
 from marabrain.memory_tools import register_memory_tools
+from marabrain.transient import TransientLimitError
 
 
 class HealthResponse(BaseModel):
@@ -52,7 +53,7 @@ class BearerVerifier(TokenVerifier):
 
 def create_server(settings: Settings, *, context: EngineContext | None = None) -> FastMCP:
     """Construct the MCP server with its health and memory tools and configured authentication."""
-    bound_context = context if context is not None else EngineContext.capture()
+    bound_context = context if context is not None else EngineContext.for_application(settings)
     auth = BearerVerifier(settings.bearer_secret) if settings.transport == Transport.HTTP and settings.bearer_secret is not None else None
     server = FastMCP("marabrain-mcp", version=__version__, auth=auth, mask_error_details=True, strict_input_validation=True, tasks=False)
     health_timeout = settings.health_timeout_seconds
@@ -61,7 +62,11 @@ def create_server(settings: Settings, *, context: EngineContext | None = None) -
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True})
     async def health() -> HealthResponse:
         """Report the application version once the daemon answers within the configured health deadline."""
-        if not await probe_engine(health_timeout, context=bound_context):
+        try:
+            ready = await probe_engine(health_timeout, context=bound_context)
+        except TransientLimitError:
+            raise ToolError("Crystalline daemon is not responding.") from None
+        if not ready:
             raise ToolError("Crystalline daemon is not responding.")
         return HealthResponse()
 
@@ -133,7 +138,7 @@ async def run_transport(settings: Settings, stdin: anyio.AsyncFile[str] | None =
 async def run_application(settings: Settings) -> None:
     """Apply one signal and engine lifecycle to either configured transport."""
     deadline = None if settings.startup_timeout_seconds is None else anyio.current_time() + settings.startup_timeout_seconds
-    context = EngineContext.capture()
+    context = EngineContext.for_application(settings)
     async with application_signals(), anyio.create_task_group() as tasks:
         stdin: anyio.AsyncFile[str] | None = None
         starting = True

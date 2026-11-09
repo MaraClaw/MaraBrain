@@ -5,9 +5,12 @@ import json
 import os
 import pwd
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
+
+from marabrain.config import Settings
+from marabrain.transient import TransientRuntime
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,13 +20,19 @@ class EngineContext:
     environment: Mapping[str, str] = field(repr=False)
     state_home: Path
     config_identity: str
+    transients: TransientRuntime = field(default_factory=TransientRuntime, repr=False, compare=False)
+
+    @classmethod
+    def for_application(cls, settings: Settings) -> EngineContext:
+        """Bind programmatic limits to one entry-time environment capture."""
+        return replace(cls.capture(), transients=TransientRuntime(settings.max_transient_processes, settings.max_capture_bytes))
 
     def __post_init__(self) -> None:
         """Detach caller-owned mappings and expose only an immutable environment snapshot."""
         object.__setattr__(self, "environment", MappingProxyType(dict(self.environment)))
 
     @classmethod
-    def capture(cls) -> EngineContext:
+    def capture(cls, *, max_transient_processes: int | None = None, max_capture_bytes: int | None = None) -> EngineContext:
         """Snapshot the environment and pin filesystem defaults before ambient state changes."""
         environment = dict(os.environ)
         home = Path(environment.get("HOME") or pwd.getpwuid(os.getuid()).pw_dir).absolute()
@@ -44,4 +53,4 @@ class EngineContext:
             environment["CRYSTALLINE_CONFIG"] = str(Path(selected).absolute())
         identity = {name: value for name, value in environment.items() if name in ("HOME", "XDG_RUNTIME_DIR", *defaults) or name.startswith("CRYSTALLINE_")}
         fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        return cls(environment, Path(environment["XDG_STATE_HOME"]), fingerprint)
+        return cls(environment, Path(environment["XDG_STATE_HOME"]), fingerprint, TransientRuntime(max_transient_processes, max_capture_bytes))

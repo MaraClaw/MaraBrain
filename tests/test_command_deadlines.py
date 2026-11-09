@@ -16,6 +16,7 @@ from fastmcp.exceptions import ToolError
 from marabrain.config import Settings
 from marabrain.crystalline import run_json
 from marabrain.domain_registry import DomainRegistry
+from marabrain.engine_context import EngineContext
 from marabrain.memory_tools import register_memory_tools
 from marabrain.server import create_server
 from memory_fake import calls, respond
@@ -35,7 +36,8 @@ async def test_mcp_cancellation_reaps_running_command(cli: Path) -> None:
         "time.sleep(60)\n"
     )
     server = FastMCP("test")
-    register_memory_tools(server)
+    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=1024)
+    register_memory_tools(server, context=context)
     send, receive = anyio.create_memory_object_stream[int](1)
 
     async def started(connection: SocketStream) -> None:
@@ -60,6 +62,9 @@ async def test_mcp_cancellation_reaps_running_command(cli: Path) -> None:
 
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+    assert not [worker for worker in threading.enumerate() if worker.name == "marabrain-cli"]
+    executable.write_text(f"#!{sys.executable}\nprint('{{}}')\n")
+    assert await run_json(["read"], context=context) == {}
 
 
 async def test_concurrent_servers_use_independent_command_deadlines(cli: Path) -> None:
@@ -151,6 +156,7 @@ async def test_cancellation_during_launch_reaps_child_before_return(cli: Path, m
     launched, release = threading.Event(), threading.Event()
     pids: list[int] = []
     original = subprocess.Popen
+    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=1024)
 
     class GatedLaunch(original[bytes]):
         """Pause delivery of a real child handle to exercise cancellation during launch."""
@@ -169,13 +175,15 @@ async def test_cancellation_during_launch_reaps_child_before_return(cli: Path, m
     async def request() -> None:
         """Run one command inside the externally cancellable request scope."""
         with scope:
-            await run_json(["read", "note", "--domain=notes"])
+            await run_json(["read", "note", "--domain=notes"], context=context)
 
     try:
         with anyio.fail_after(10):
             async with anyio.create_task_group() as tasks:
                 tasks.start_soon(request)
                 await anyio.to_thread.run_sync(launched.wait)
+                with pytest.raises(ToolError, match="capacity is exhausted"):
+                    await run_json(["delete", "note", "notes", "--force"], context=context)
                 scope.cancel()
                 await anyio.lowlevel.checkpoint()
                 release.set()
@@ -184,3 +192,6 @@ async def test_cancellation_during_launch_reaps_child_before_return(cli: Path, m
     [pid] = pids
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+    assert not [worker for worker in threading.enumerate() if worker.name == "marabrain-cli"]
+    (cli / "crystalline").write_text(f"#!{sys.executable}\nprint('{{}}')\n")
+    assert await run_json(["read"], context=context) == {}

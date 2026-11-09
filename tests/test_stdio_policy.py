@@ -11,6 +11,7 @@ from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 from fastmcp.exceptions import ToolError
 from memory_fake import RECEIPT, calls, domain_list
+from transport_process_policy import CAPTURE_BYTES, PRIVATE_OUTPUT, assert_transport_process_policy, process_probe
 
 
 async def test_stdio_servers_keep_separate_domain_policies(cli: Path) -> None:
@@ -88,3 +89,29 @@ async def test_stdio_cancellation_reaps_child_before_disconnect(cli: Path) -> No
             result = await client.call_tool("read_memory", {"domain": "notes", "permalink": "after"})
             assert result.structured_content == {"ok": True}
             tasks.cancel_scope.cancel()
+
+
+async def test_stdio_process_limits_reject_saturation_and_overflow_then_reuse(
+    cli: Path, capfd: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Preserve module stdio health and native responses after admission and output failures."""
+    log = cli / "server.stderr"
+    transport = StdioTransport(
+        sys.executable,
+        ["-m", "marabrain"],
+        env={
+            **os.environ,
+            "MARABRAIN_ENGINE_MODE": "external",
+            "MARABRAIN_TRANSPORT": "stdio",
+            "MARABRAIN_MAX_TRANSIENT_PROCESSES": "2",
+            "MARABRAIN_MAX_CAPTURE_BYTES": str(CAPTURE_BYTES),
+            "MARABRAIN_COMMAND_TIMEOUT_SECONDS": "60",
+            "MARABRAIN_HEALTH_TIMEOUT_SECONDS": "60",
+        },
+        keep_alive=False,
+        log_file=log,
+    )
+    with anyio.fail_after(30):
+        async with process_probe(cli) as probe, Client(transport) as client:
+            await assert_transport_process_policy(client, probe)
+    assert PRIVATE_OUTPUT not in log.read_text() + "".join(capfd.readouterr()) + caplog.text
