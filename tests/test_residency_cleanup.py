@@ -4,7 +4,8 @@ import os
 import signal
 import subprocess
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import anyio
@@ -20,7 +21,7 @@ from marabrain.engine_context import EngineContext
 from marabrain.lifecycle import EngineLifecycleError
 from marabrain.server import create_server
 from marabrain.transient import StdoutCapture
-from marabrain.workspaces import WorkspaceManager
+from marabrain.workspaces import WorkspaceManager, WorkspaceRuntime
 
 
 @pytest.mark.parametrize("outcome", ["cancel", "failure"])
@@ -32,8 +33,20 @@ async def test_command_cancellation_and_failure_keep_slot_until_worker_cleanup(
     entered, release = threading.Event(), threading.Event()
     original_launch = subprocess.Popen
     original_communicate = crystalline.communicate
+    original_lease = WorkspaceManager.lease
+    cleaned = anyio.Event()
     pids: list[int] = []
     scope = anyio.CancelScope()
+
+    @asynccontextmanager
+    async def observed_lease(manager: WorkspaceManager, workspace_id: str, *, deadline: float | None = None) -> AsyncGenerator[WorkspaceRuntime]:
+        """Signal server-side lease release independently of client cancellation completion."""
+        try:
+            async with original_lease(manager, workspace_id, deadline=deadline) as runtime:
+                yield runtime
+        finally:
+            if workspace_id == "alpha":
+                cleaned.set()
 
     class GatedLaunch(original_launch[bytes]):
         """Delay handing a real command handle back to its owning worker."""
@@ -57,6 +70,7 @@ async def test_command_cancellation_and_failure_keep_slot_until_worker_cleanup(
     async with Client(create_server(managed_settings())) as client:
         await client.call_tool("create_memory", {"workspace_id": "alpha", "domain": "notes", "title": "note", "content": "body"})
         daemon = int((context_for("alpha", root).state_home / "owner").read_text())
+        monkeypatch.setattr(WorkspaceManager, "lease", observed_lease)
         if outcome == "cancel":
             monkeypatch.setattr("marabrain.crystalline.subprocess.Popen", GatedLaunch)
         else:
@@ -85,6 +99,7 @@ async def test_command_cancellation_and_failure_keep_slot_until_worker_cleanup(
                     assert len(pids) == 1
                 finally:
                     release.set()
+            await cleaned.wait()
         monkeypatch.setattr("marabrain.crystalline.subprocess.Popen", original_launch)
         monkeypatch.setattr("marabrain.crystalline.communicate", original_communicate)
         result = await client.call_tool("search_memories", {"workspace_id": "beta", "domains": ["notes"], "query": "body"})
