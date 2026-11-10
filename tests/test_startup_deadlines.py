@@ -13,14 +13,17 @@ from pathlib import Path
 import anyio
 import pytest
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
+from memory_fake import WORKSPACE_ID, workspace_context
 from pydantic import SecretStr
-from test_engine_lifecycle import application, assert_reaped, await_file, await_http, health
+from test_engine_lifecycle import activation_failed, application, assert_reaped, await_file, await_http, begin_workspace
 from test_engine_lifecycle import runtime as runtime
 
-from marabrain import server
+from marabrain import workspaces
 from marabrain.config import EngineMode, Settings, Transport
 from marabrain.domain_registry import DomainRegistry
 from marabrain.engine_context import EngineContext
+from marabrain.workspaces import WorkspaceManager
 
 BUDGET_ENGINE = '''
 """Expose deterministic startup phase events and retain a foreground daemon."""
@@ -82,11 +85,9 @@ async def test_total_startup_expiry_stops_each_engine_phase_before_serving(budge
     monkeypatch.setenv("BLOCK_PHASE", phase)
     event = "preexisting" if phase == "probe" else phase
     async with application(budget_runtime) as process:
+        reader = await begin_workspace(process)
         await await_file(budget_runtime / f"{event}-started")
-        with anyio.fail_after(5):
-            assert await process.wait() != 0
-        assert process.stdout is not None
-        assert b"".join([chunk async for chunk in process.stdout]) == b""
+        await activation_failed(process, reader)
     commands = [json.loads(line)["args"] for line in (budget_runtime / "events").read_text().splitlines()]
     assert (["--json", "domain", "list"] in commands) == (phase == "sync")
     assert len(list(budget_runtime.glob("launched-*"))) == (0 if phase == "probe" else 1)
@@ -101,7 +102,7 @@ async def test_total_deadline_is_not_reset_after_a_slow_preexisting_probe(monkey
     started = anyio.current_time()
     elapsed = 0.0
     deadlines: list[float | None] = []
-    transport_reached = False
+    workspace_ready = False
 
     def current_time() -> float:
         """Advance startup time only when a preparation phase consumes its budget."""
@@ -121,21 +122,17 @@ async def test_total_deadline_is_not_reset_after_a_slow_preexisting_probe(monkey
         deadlines.append(deadline)
         elapsed = 1.6
 
-    async def run_transport(settings: Settings, stdin: anyio.AsyncFile[str] | None = None, *, context: EngineContext | None = None) -> None:
-        """Record any attempt to serve after the original startup budget expires."""
-        nonlocal transport_reached
-        transport_reached = True
-
     monkeypatch.setattr(anyio, "current_time", current_time)
-    monkeypatch.setattr(server, "engine_lifecycle", prepare_engine)
+    monkeypatch.setattr(workspaces, "managed_engine", prepare_engine)
     monkeypatch.setattr(DomainRegistry, "synchronize", synchronize)
-    monkeypatch.setattr(server, "run_transport", run_transport)
-
-    with pytest.RaisesGroup(TimeoutError, flatten_subgroups=True):
-        await server.run_application(settings)
+    manager = WorkspaceManager(settings, EngineContext.for_application(settings))
+    async with manager.lifespan():
+        with pytest.raises(ToolError, match="activation failed"):
+            await manager.get(WORKSPACE_ID)
+            workspace_ready = True
 
     assert deadlines == [started + 1.5, started + 1.5]
-    assert not transport_reached
+    assert not workspace_ready
 
 
 @pytest.mark.asyncio
@@ -160,18 +157,18 @@ async def test_initializer_expiry_reaps_writer_without_launching_daemon(budget_r
     async with listener, anyio.create_task_group() as tasks:
         tasks.start_soon(listener.serve, hold_request)
         async with application(budget_runtime) as process:
+            reader = await begin_workspace(process)
             with anyio.fail_after(10):
                 await received.wait()
             listing = await anyio.run_process(["ps", "-A", "-o", "pid=,ppid="])
             children = [int(pid) for pid, parent in (line.split() for line in listing.stdout.decode().splitlines()) if int(parent) == process.pid]
             assert len(children) == 1
-            with anyio.fail_after(5):
-                assert await process.wait() != 0
+            await activation_failed(process, reader)
             with pytest.raises(ProcessLookupError):
                 os.kill(children[0], 0)
         tasks.cancel_scope.cancel()
     assert not list(budget_runtime.glob("launched-*"))
-    assert not (budget_runtime / "xdg_config_home/crystalline/config.yaml").exists()
+    assert not (Path(workspace_context().environment["XDG_CONFIG_HOME"]) / "crystalline/config.yaml").exists()
     assert_reaped(budget_runtime)
 
 
@@ -186,19 +183,29 @@ async def test_completed_startup_serves_beyond_total_deadline(
     monkeypatch.setenv("MARABRAIN_BEARER_SECRET", "s" * 32)
     monkeypatch.setenv("MARABRAIN_PORT", str(unused_tcp_port))
     async with application(budget_runtime) as process:
-        await await_file(budget_runtime / "sync-started")
+        reader = await begin_workspace(process) if transport == "stdio" else None
         if transport == "http":
             await await_http(budget_runtime)
+            async with Client(f"http://127.0.0.1:{unused_tcp_port}/mcp", auth="s" * 32) as client:
+                await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "ready"})
+        else:
+            assert reader is not None
+            with anyio.fail_after(10):
+                activated = json.loads(await reader.receive_until(b"\n", 100000))
+                assert activated["id"] == 2 and not activated["result"].get("isError", False)
+        await await_file(budget_runtime / "sync-started")
         first = json.loads((budget_runtime / "events").read_text().splitlines()[0])["time"]
         await anyio.sleep(max(0, first + 1.7 - time.monotonic()))
         if transport == "stdio":
-            await health(process)
-            assert process.stdin is not None
+            assert process.stdin is not None and reader is not None
+            await process.stdin.send(b'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"health","arguments":{}}}\n')
+            result = json.loads(await reader.receive_until(b"\n", 100000))
+            assert result["result"]["structuredContent"] == {"status": "ok", "version": "0.4.5"}
             await process.stdin.aclose()
         else:
             async with Client(f"http://127.0.0.1:{unused_tcp_port}/mcp", auth="s" * 32) as client:
                 result = await client.call_tool("health", {})
-                assert result.structured_content == {"status": "ok", "version": "0.4.2"}
+                assert result.structured_content == {"status": "ok", "version": "0.4.5"}
             process.send_signal(signal.SIGTERM)
         with anyio.fail_after(9):
             assert await process.wait() == 0
@@ -208,16 +215,18 @@ async def test_completed_startup_serves_beyond_total_deadline(
 @pytest.mark.asyncio
 async def test_external_startup_expiry_preserves_preexisting_daemon(budget_runtime: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Cancel initial synchronization while leaving an externally owned daemon running."""
-    async with await anyio.open_process(["crystalline", "serve", "--http", "off"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as external:
+    async with await anyio.open_process(
+        ["crystalline", "serve", "--http", "off"], env=dict(workspace_context().environment), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    ) as external:
         try:
             await await_file(budget_runtime / "owner")
             monkeypatch.setenv("MARABRAIN_ENGINE_MODE", "external")
             monkeypatch.setenv("MARABRAIN_STARTUP_TIMEOUT_SECONDS", "0.5")
             monkeypatch.setenv("BLOCK_PHASE", "sync")
             async with application(budget_runtime) as process:
+                reader = await begin_workspace(process)
                 await await_file(budget_runtime / "sync-started")
-                with anyio.fail_after(5):
-                    assert await process.wait() != 0
+                await activation_failed(process, reader)
             assert external.returncode is None
             assert len(list(budget_runtime.glob("launched-*"))) == 1
         finally:

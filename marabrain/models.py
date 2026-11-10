@@ -54,6 +54,16 @@ def _metadata(value: dict[str, JsonValue]) -> dict[str, JsonValue]:
     return value
 
 
+WorkspaceId = Annotated[
+    str,
+    Field(
+        strict=True,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+        description="Case-sensitive workspace ID authorized by the trusted platform; 1-64 ASCII alphanumerics, underscores, or hyphens, starting alphanumeric.",
+    ),
+]
 Domain = Annotated[str, Field(min_length=1, max_length=128, description="Registered domain name."), AfterValidator(_positional)]
 Permalink = Annotated[str, Field(min_length=1, max_length=512, description="Domain-relative permalink, as returned by search."), AfterValidator(_relative_path)]
 Title = Annotated[str, Field(min_length=1, max_length=256, description="Memory title."), AfterValidator(_positional)]

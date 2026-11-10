@@ -10,13 +10,15 @@ from anyio.abc import SocketAttribute, SocketStream
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 from fastmcp.exceptions import ToolError
-from memory_fake import RECEIPT, calls, domain_list
+from memory_fake import RECEIPT, WORKSPACE_ACTIVATION, WORKSPACE_ID, calls, domain_list, workspace_registry
 from transport_process_policy import CAPTURE_BYTES, PRIVATE_OUTPUT, assert_transport_process_policy, process_probe
 
 
 async def test_stdio_servers_keep_separate_domain_policies(cli: Path) -> None:
     """Apply each module-launched server's exact policy without running denied commands."""
     domain_list(cli, ["Notes"])
+    await workspace_registry().synchronize()
+    (cli / "calls.jsonl").unlink()
     common = {**os.environ, "MARABRAIN_ENGINE_MODE": "external", "MARABRAIN_TRANSPORT": "stdio"}
     allowed = StdioTransport(sys.executable, ["-m", "marabrain"], env={**common, "MARABRAIN_ALLOWED_DOMAINS": '["Notes"]'})
     denied = StdioTransport(sys.executable, ["-m", "marabrain"], env={**common, "MARABRAIN_ALLOWED_DOMAINS": "[]"})
@@ -24,11 +26,11 @@ async def test_stdio_servers_keep_separate_domain_policies(cli: Path) -> None:
         async with Client(allowed) as allowed_client, Client(denied) as denied_client:
             for client, domain in ((allowed_client, "notes"), (denied_client, "Notes")):
                 with pytest.raises(ToolError):
-                    await client.call_tool("read_memory", {"domain": domain, "permalink": "plan"})
-            assert [record["argv"] for record in calls(cli)] == [["--json", "domain", "list"]] * 2
-            result = await allowed_client.call_tool("read_memory", {"domain": "Notes", "permalink": "plan"})
+                    await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": domain, "permalink": "plan"})
+            assert calls(cli) == []
+            result = await allowed_client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "Notes", "permalink": "plan"})
             assert result.structured_content == RECEIPT
-            assert len(calls(cli)) == 3
+            assert [record["argv"] for record in calls(cli)] == [*WORKSPACE_ACTIVATION, ["--json", "read", "plan", "--domain=Notes"]]
 
 
 async def test_stdio_cancellation_reaps_child_before_disconnect(cli: Path) -> None:
@@ -73,7 +75,7 @@ async def test_stdio_cancellation_reaps_child_before_disconnect(cli: Path) -> No
             async def request() -> None:
                 """Issue one request whose cancellation sends an MCP notification."""
                 with scope:
-                    await client.call_tool("read_memory", {"domain": "notes", "permalink": "hang"})
+                    await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "hang"})
 
             tasks.start_soon(request)
             pid = await receive.receive()
@@ -86,7 +88,7 @@ async def test_stdio_cancellation_reaps_child_before_disconnect(cli: Path) -> No
                 except ProcessLookupError:
                     break
                 await anyio.lowlevel.checkpoint()
-            result = await client.call_tool("read_memory", {"domain": "notes", "permalink": "after"})
+            result = await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "after"})
             assert result.structured_content == {"ok": True}
             tasks.cancel_scope.cancel()
 

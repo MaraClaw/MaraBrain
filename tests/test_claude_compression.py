@@ -208,7 +208,7 @@ async def test_shared_claude_timeout_is_single_and_recoverable(claude: ClaudeScr
     async def read() -> None:
         """Record the fixed provider timeout error at each waiting caller."""
         with pytest.raises(ToolError) as error:
-            await cache.get("notes", "p", "q", "content")
+            await cache.get("notes", "p", "q", "content", workspace_id="test-workspace")
         errors.append(str(error.value))
 
     monkeypatch.setattr("marabrain.compression.anyio.fail_after", tracked_timeout)
@@ -230,8 +230,8 @@ async def test_shared_claude_timeout_is_single_and_recoverable(claude: ClaudeScr
             assert errors == ["LLM compression failed."] * 2
             assert claude.closed and claude.options is not None and claude.options.cwd is not None and not Path(claude.options.cwd).exists()
             claude.messages, claude.wait = [claude_result({"context": "recovered"})], False
-            assert await cache.get("notes", "p", "q", "content") == "recovered"
-            assert await cache.get("notes", "p", "q", "content") == "recovered"
+            assert await cache.get("notes", "p", "q", "content", workspace_id="test-workspace") == "recovered"
+            assert await cache.get("notes", "p", "q", "content", workspace_id="test-workspace") == "recovered"
             assert len(scopes) == 2
 
 
@@ -275,7 +275,7 @@ async def test_malformed_claude_utf8_does_not_cancel_unrelated_work(claude: Clau
 
     async def read() -> None:
         """Record successful completion of the unrelated pending request."""
-        results.append(await cache.get("notes", "p", "good", "content"))
+        results.append(await cache.get("notes", "p", "good", "content", workspace_id="test-workspace"))
 
     with anyio.fail_after(5):
         async with cache.lifespan(), anyio.create_task_group() as tasks:
@@ -283,7 +283,7 @@ async def test_malformed_claude_utf8_does_not_cancel_unrelated_work(claude: Clau
                 tasks.start_soon(read)
                 await started.wait()
                 with pytest.raises(ToolError, match="^LLM compression failed\\.$"):
-                    await cache.get("notes", "p", "bad", "content")
+                    await cache.get("notes", "p", "bad", "content", workspace_id="test-workspace")
                 assert not results
             finally:
                 release.set()

@@ -1346,7 +1346,7 @@ wheels = [
 
 [[package]]
 name = "marabrain"
-version = "0.4.2"
+version = "0.4.5"
 source = { editable = "." }
 dependencies = [
     { name = "aiodns" },

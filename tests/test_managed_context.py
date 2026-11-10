@@ -9,6 +9,7 @@ import anyio
 import pytest
 import yaml
 from anyio.streams.buffered import BufferedByteReceiveStream
+from memory_fake import WORKSPACE_ID, workspace_context
 from test_embeddings import Provider, configure
 from test_embeddings import provider as provider
 from test_engine_lifecycle import application, assert_reaped, health
@@ -51,27 +52,36 @@ async def test_application_uses_entry_context_and_limits_credential_overlay_to_d
     configure(monkeypatch, provider, EMBEDDING_API_KEY="", EMBEDDING_API_KEY_FILE=str(key))
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     ambient = dict(os.environ)
+    context = workspace_context()
     async with application(runtime, command=[sys.executable, "-c", CAPTURE_THEN_CHANGE]) as process:
         await health(process)
         assert process.stdin is not None and process.stdout is not None
         reader = BufferedByteReceiveStream(process.stdout)
         await process.stdin.send(
-            b'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_memory","arguments":{"domain":"notes","permalink":"plan"}}}\n'
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {"name": "read_memory", "arguments": {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "plan"}},
+                }
+            ).encode()
+            + b"\n"
         )
         with anyio.fail_after(5):
             result = json.loads(await reader.receive_until(b"\n", 100000))
-        assert result["result"]["structuredContent"] == {"store": str(runtime / "xdg_state_home"), "key": ""}
+        assert result["result"]["structuredContent"] == {"store": str(context.state_home), "key": ""}
         await process.stdin.aclose()
         with anyio.fail_after(5):
             assert await process.wait() == 0
-    config = runtime / "xdg_config_home/crystalline/config.yaml"
+    config = Path(context.environment["XDG_CONFIG_HOME"]) / "crystalline/config.yaml"
     assert yaml.safe_load(config.read_text())["embeddings"]["model"] == "test-model"
     assert "bound-secret" not in config.read_text()
     assert [request.authorization for request in provider.requests] == ["Bearer bound-secret"]
     events = [json.loads(line) for line in (runtime / "events").read_text().splitlines()]
     assert [event["key"] for event in events if event["args"] == ["serve", "--http", "off"]] == ["bound-secret"]
     assert all(event["key"] == "" for event in events if event["args"] != ["serve", "--http", "off"])
-    assert all(event["state"] == str(runtime / "xdg_state_home") and event["config"] == str(runtime / "xdg_config_home") for event in events)
+    assert all(event["state"] == str(context.state_home) and event["config"] == context.environment["XDG_CONFIG_HOME"] for event in events)
     assert (runtime / "captures").read_text().splitlines() == ["captured"]
     assert dict(os.environ) == ambient
     assert b"bound-secret" not in (runtime / "application-stderr").read_bytes()

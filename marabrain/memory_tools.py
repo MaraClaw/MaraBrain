@@ -12,9 +12,6 @@ from marabrain.compression import compress_memory
 from marabrain.compression_cache import CompressionCache
 from marabrain.crystalline import JsonObject, run_json
 from marabrain.deadlines import deadline_after
-from marabrain.domain_admission import DomainCommandAdmission
-from marabrain.domain_registry import DomainRegistry
-from marabrain.engine_context import EngineContext
 from marabrain.llm_config import LLMSettings
 from marabrain.models import (
     AppendEdit,
@@ -36,7 +33,9 @@ from marabrain.models import (
     ReplaceSectionEdit,
     Tags,
     Title,
+    WorkspaceId,
 )
+from marabrain.workspaces import WorkspaceManager
 
 _COMPRESSION_PROGRESS_INTERVAL = 5.0
 
@@ -70,38 +69,42 @@ def _edit_arguments(operation: EditOperation) -> list[str]:
 
 def register_memory_tools(
     server: FastMCP,
-    allowed_domains: frozenset[str] | None = None,
+    manager: WorkspaceManager,
     command_timeout_seconds: float = 30.0,
     *,
     llm_settings: LLMSettings | None = None,
-    context: EngineContext | None = None,
     operation_timeout_seconds: float | None = None,
-    domain_command_capacity: int | None = None,
     compression_cache: CompressionCache | None = None,
 ) -> None:
-    """Register the five Crystalline-backed memory tools on the server."""
-
-    captured = context if context is not None else EngineContext.capture()
-    registry = DomainRegistry.from_environment(command_timeout_seconds, allowed_domains, context=captured)
-    admission = DomainCommandAdmission(domain_command_capacity)
+    """Register five memory tools bound to the application's workspace manager and its lifespan."""
 
     @server.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
     async def create_memory(
-        domain: Domain, title: Title, content: Content, tags: Tags | None = None, folder: Folder | None = None, metadata: Metadata | None = None
+        workspace_id: WorkspaceId,
+        domain: Domain,
+        title: Title,
+        content: Content,
+        tags: Tags | None = None,
+        folder: Folder | None = None,
+        metadata: Metadata | None = None,
     ) -> JsonObject:
         """Create a new Markdown memory in a domain; an existing memory is never overwritten. Returns Crystalline's receipt, including its permalink."""
         deadline = deadline_after(operation_timeout_seconds)
-        (resolved,) = await registry.resolve([domain], create=True, deadline=deadline)
+        manager.admit([domain])
         options = [
             *([] if tags is None else [f"--tags={','.join(tags)}"]),
             *([] if folder is None else [f"--folder={folder}"]),
             *([] if metadata is None else ["--metadata", json.dumps(metadata, allow_nan=False)]),
         ]
-        with admission.admit([resolved]):
-            return await run_json(["write", resolved, title, *options], content, command_timeout_seconds, context=captured, deadline=deadline)
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            (resolved,) = await runtime.registry.resolve([domain], create=True, deadline=deadline)
+            with runtime.admission.admit([resolved]):
+                return await run_json(["write", resolved, title, *options], content, command_timeout_seconds, context=runtime.context, deadline=deadline)
 
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True})
-    async def read_memory(domain: Domain, permalink: Permalink, ctx: Context, compress: bool = False, query: Query | None = None) -> JsonObject:
+    async def read_memory(
+        workspace_id: WorkspaceId, domain: Domain, permalink: Permalink, ctx: Context, compress: bool = False, query: Query | None = None
+    ) -> JsonObject:
         """Read one memory's full Markdown and metadata, or distill its content against a query.
 
         With compress=true, query is required and full content is sent to the configured LLM.
@@ -111,9 +114,13 @@ def register_memory_tools(
         if compress and query is None:
             raise ToolError("A query is required when read compression is enabled.")
         deadline = deadline_after(operation_timeout_seconds)
-        (resolved,) = await registry.resolve([domain], deadline=deadline)
-        with admission.admit([resolved]):
-            result = await run_json(["read", permalink, f"--domain={resolved}"], timeout_seconds=command_timeout_seconds, context=captured, deadline=deadline)
+        manager.admit([domain])
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
+            with runtime.admission.admit([resolved]):
+                result = await run_json(
+                    ["read", permalink, f"--domain={resolved}"], timeout_seconds=command_timeout_seconds, context=runtime.context, deadline=deadline
+                )
         if compress and query is not None:
             settings = llm_settings if llm_settings is not None else LLMSettings()
             settings.require_configured()
@@ -138,7 +145,7 @@ def register_memory_tools(
                     if compression_cache is None:
                         compression = await compress_memory(settings, query, memory.content)
                     else:
-                        compression = await compression_cache.get(resolved, permalink, query, memory.content)
+                        compression = await compression_cache.get(resolved, permalink, query, memory.content, workspace_id=workspace_id)
                 except ToolError as error:
                     compression = error
                 finally:
@@ -150,32 +157,51 @@ def register_memory_tools(
         return result
 
     @server.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})
-    async def edit_memory(domain: Domain, permalink: Permalink, operation: EditOperation, expected_checksum: Checksum | None = None) -> JsonObject:
+    async def edit_memory(
+        workspace_id: WorkspaceId, domain: Domain, permalink: Permalink, operation: EditOperation, expected_checksum: Checksum | None = None
+    ) -> JsonObject:
         """Edit an existing memory with one operation; expected_checksum from read_memory refuses the edit if the memory changed since."""
         deadline = deadline_after(operation_timeout_seconds)
-        (resolved,) = await registry.resolve([domain], deadline=deadline)
+        manager.admit([domain])
         checksum = [] if expected_checksum is None else [f"--expected-checksum={expected_checksum}"]
         name, *flags = _edit_arguments(operation)
-        with admission.admit([resolved]):
-            return await run_json(
-                ["edit", permalink, resolved, name, *flags, *checksum], operation.content, command_timeout_seconds, context=captured, deadline=deadline
-            )
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
+            with runtime.admission.admit([resolved]):
+                return await run_json(
+                    ["edit", permalink, resolved, name, *flags, *checksum],
+                    operation.content,
+                    command_timeout_seconds,
+                    context=runtime.context,
+                    deadline=deadline,
+                )
 
     @server.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})
-    async def delete_memory(domain: Domain, permalink: Permalink) -> JsonObject:
+    async def delete_memory(workspace_id: WorkspaceId, domain: Domain, permalink: Permalink) -> JsonObject:
         """Permanently delete one memory without confirmation or checksum protection."""
         deadline = deadline_after(operation_timeout_seconds)
-        (resolved,) = await registry.resolve([domain], deadline=deadline)
-        with admission.admit([resolved]):
-            return await run_json(["delete", permalink, resolved, "--force"], timeout_seconds=command_timeout_seconds, context=captured, deadline=deadline)
+        manager.admit([domain])
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
+            with runtime.admission.admit([resolved]):
+                return await run_json(
+                    ["delete", permalink, resolved, "--force"], timeout_seconds=command_timeout_seconds, context=runtime.context, deadline=deadline
+                )
 
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False})
-    async def search_memories(query: Query, domains: Domains, tags: Tags | None = None, limit: Limit = 10, page: Page = 1) -> JsonObject:
+    async def search_memories(
+        workspace_id: WorkspaceId, query: Query, domains: Domains, tags: Tags | None = None, limit: Limit = 10, page: Page = 1
+    ) -> JsonObject:
         """Search memories in one or more domains for nonempty query text, optionally narrowed by tags. Hits give the domain and permalink for read_memory."""
         deadline = deadline_after(operation_timeout_seconds)
-        resolved = await registry.resolve(domains, deadline=deadline)
-        filters = [*(f"--domain={domain}" for domain in resolved), *(f"--tag={tag}" for tag in tags or [])]
-        with admission.admit(resolved):
-            return await run_json(
-                ["search", *filters, f"--limit={limit}", f"--page={page}", query], timeout_seconds=command_timeout_seconds, context=captured, deadline=deadline
-            )
+        manager.admit(domains)
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            resolved = await runtime.registry.resolve(domains, deadline=deadline)
+            filters = [*(f"--domain={domain}" for domain in resolved), *(f"--tag={tag}" for tag in tags or [])]
+            with runtime.admission.admit(resolved):
+                return await run_json(
+                    ["search", *filters, f"--limit={limit}", f"--page={page}", query],
+                    timeout_seconds=command_timeout_seconds,
+                    context=runtime.context,
+                    deadline=deadline,
+                )

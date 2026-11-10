@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 import anyio
-from fastmcp import Client, FastMCP
+from fastmcp import Client
 from fastmcp.exceptions import ToolError
-from memory_fake import calls, respond
+from memory_fake import WORKSPACE_ACTIVATION, WORKSPACE_ID, calls, respond, workspace_registry
 from pydantic import SecretStr, TypeAdapter
 from starlette.testclient import TestClient
 from test_compression import Provider, provider as provider
@@ -18,12 +18,10 @@ from marabrain.crystalline import JsonObject
 from marabrain.llm_config import LLMProvider
 from marabrain.server import create_server
 from marabrain.llm_config import LLMSettings
-from marabrain.memory_tools import register_memory_tools
 from marabrain.compression import compress_memory
-from marabrain.domain_registry import DomainRegistry
 
 MEMORY: JsonObject = {"domain": "notes", "permalink": "team/plan", "content": "# Retries\nRetry at most twice.\n# Lunch\nPizza.", "checksum": "abc"}
-TARGET = {"domain": "notes", "permalink": "team/plan"}
+TARGET = {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "team/plan"}
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +47,8 @@ async def test_compressed_read_replaces_content_and_preserves_source_metadata(cl
     async with Client(create_server(Settings())) as client:
         result = (await client.call_tool("read_memory", {**TARGET, "query": "retry cap", "compress": True})).structured_content
     assert result == {**MEMORY, "content": "result", "compressed": True}
-    assert [record["argv"] for record in calls(cli)] == [["--json", "read", "team/plan", "--domain=notes"]]
+    expected = [*WORKSPACE_ACTIVATION, ["--json", "read", "team/plan", "--domain=notes"]]
+    assert [(record["argv"], record["stdin"]) for record in calls(cli)] == [(command, "") for command in expected]
     [(_, _, payload)] = provider.requests
     messages = TypeAdapter(list[JsonObject]).validate_python(payload["messages"])
     content = messages[-1]["content"]
@@ -142,8 +141,7 @@ async def test_compression_keeps_its_own_budget_after_engine_deadline(cli: Path,
         return await compress_memory(settings, query, content)
 
     monkeypatch.setattr("marabrain.memory_tools.compress_memory", delayed_provider)
-    server = FastMCP("compressed")
-    register_memory_tools(server, llm_settings=LLMSettings(), operation_timeout_seconds=1)
+    server = create_server(Settings(llm=LLMSettings(), operation_timeout_seconds=1))
     async with Client(server) as client:
         response = await client.call_tool("read_memory", {**TARGET, "query": "retry", "compress": True})
     assert response.structured_content == {**MEMORY, "content": "result", "compressed": True}
@@ -167,7 +165,8 @@ async def test_cache_hit_reads_and_validates_fresh_source_metadata(cli: Path, pr
         with pytest.raises(ToolError, match="different memory"):
             await client.call_tool("read_memory", arguments)
     assert len(provider.requests) == 1
-    assert [record["argv"] for record in calls(cli)] == [["--json", "read", "team/plan", "--domain=notes"]] * 3
+    expected = [*WORKSPACE_ACTIVATION, *([["--json", "read", "team/plan", "--domain=notes"]] * 3)]
+    assert [(record["argv"], record["stdin"]) for record in calls(cli)] == [(command, "") for command in expected]
 
 
 @pytest.mark.parametrize("change", ["query", "permalink", "content", "domain", "application"])
@@ -177,7 +176,7 @@ async def test_cache_reuse_requires_complete_identity(cli: Path, provider: Provi
     monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_ENTRIES", "4")
     monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_BYTES", "1024")
     (cli / "domains.json").write_text(json.dumps([{"name": "notes"}, {"name": "other"}]))
-    await DomainRegistry.from_environment(5).synchronize()
+    await workspace_registry().synchronize()
     respond(cli, json.dumps(MEMORY))
     arguments = {**TARGET, "query": "retry", "compress": True}
     server = create_server(Settings())
@@ -206,7 +205,7 @@ async def test_cache_aliases_share_only_the_resolved_domain(cli: Path, provider:
     monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_ENTRIES", "4")
     monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_BYTES", "1024")
     (cli / "domains.json").write_text(json.dumps([{"name": "Legacy", "canonical_name": "canonical", "aliases": ["alias"]}]))
-    await DomainRegistry.from_environment(5).synchronize()
+    await workspace_registry().synchronize()
     source = {**MEMORY, "domain": "Legacy"}
     respond(cli, json.dumps(source))
     async with Client(create_server(Settings())) as client:

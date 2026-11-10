@@ -27,7 +27,7 @@ async def test_interrupted_launch_handoff_reaps_child_before_next_command(runtim
     """Acquire the real launch handle under shielding and clean up before dispatching again."""
     open_process = anyio.open_process
     current_time = anyio.current_time
-    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=1024)
+    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=1024, max_total_capture_bytes=1024)
     deadline = current_time() + 30
     owned: list[int] = []
     client = [
@@ -78,7 +78,8 @@ async def test_interrupted_launch_handoff_reaps_child_before_next_command(runtim
     assert_reaped(runtime)
     if interrupt == "expire":
         monkeypatch.setattr(anyio, "current_time", current_time)
-    assert await run_startup_command([sys.executable, "-c", "print('{}')"], context) == b"{}\n"
+    with await run_startup_command([sys.executable, "-c", "print('{}')"], context) as output:
+        assert output == b"{}\n"
 
 
 @pytest.mark.asyncio

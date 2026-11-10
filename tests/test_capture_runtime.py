@@ -18,12 +18,17 @@ from marabrain.transient import READ_BYTES, CaptureLimitError, StdoutCapture
 
 @pytest.mark.parametrize("control", [False, True])
 @pytest.mark.parametrize("extra", [0, 1])
-async def test_capture_counts_raw_multibyte_boundary_and_reuses_slot(cli: Path, control: bool, extra: int) -> None:
+@pytest.mark.parametrize("aggregate", ["disabled", "alone", "combined"])
+async def test_capture_counts_raw_multibyte_boundary_and_reuses_slot(cli: Path, control: bool, extra: int, aggregate: str) -> None:
     """Accept exactly S raw bytes and reject S+1 even when a UTF-8 character crosses reads."""
     payload = '{"content":"' + "x" * (READ_BYTES - 13) + '\u00fc"}'
     raw = payload.encode()
     (cli / "crystalline").write_text(f"#!{sys.executable}\nimport os\ndata = {raw!r} + b' ' * {extra}\nos.write(1, data[:65536])\nos.write(1, data[65536:])\n")
-    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=len(raw))
+    context = EngineContext.capture(
+        max_transient_processes=2,
+        max_capture_bytes=None if aggregate == "alone" else len(raw),
+        max_total_capture_bytes=None if aggregate == "disabled" else len(raw),
+    )
     if extra:
         with pytest.raises(CaptureLimitError if control else ToolError, match="capture limit"):
             if control:
@@ -31,7 +36,8 @@ async def test_capture_counts_raw_multibyte_boundary_and_reuses_slot(cli: Path, 
             else:
                 await run_json(["read"], context=context)
     elif control:
-        assert await run_startup_command([str(cli / "crystalline")], context) == raw
+        with await run_startup_command([str(cli / "crystalline")], context) as output:
+            assert output == raw
     else:
         assert await run_json(["read"], context=context) == {"content": "x" * (READ_BYTES - 13) + "\u00fc"}
     (cli / "crystalline").write_text(f"#!{sys.executable}\nprint('{{}}', end='')\n")
@@ -75,7 +81,8 @@ async def test_continuous_overflow_reaps_before_eof_without_payload_diagnostics(
 
 
 @pytest.mark.parametrize("close_stdin", [False, True])
-async def test_bounded_capture_preserves_duplex_pressure_and_early_stdin_close(cli: Path, close_stdin: bool) -> None:
+@pytest.mark.parametrize("aggregate", [None, 300000])
+async def test_bounded_capture_preserves_duplex_pressure_and_early_stdin_close(cli: Path, close_stdin: bool, aggregate: int | None) -> None:
     """Drain pipe-filling stdout while sending large stdin or handling its early closure."""
     (cli / "crystalline").write_text(
         f"#!{sys.executable}\nimport json, os, sys\n"
@@ -85,7 +92,7 @@ async def test_bounded_capture_preserves_duplex_pressure_and_early_stdin_close(c
         "content = '' if early else sys.stdin.read()\n"
         "print(json.dumps({'received': len(content)}))\n"
     )
-    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=300000)
+    context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=300000, max_total_capture_bytes=aggregate)
     with anyio.fail_after(10):
         assert await run_json(["write"], "x" * 1048576, context=context) == {"received": 0 if close_stdin else 1048576}
 
@@ -100,13 +107,16 @@ async def test_overflow_while_large_stdin_is_pending_finishes_worker(cli: Path) 
 
 
 @pytest.mark.parametrize("control", [False, True])
-async def test_exact_capture_still_requires_eof_and_successful_exit(cli: Path, control: bool) -> None:
+@pytest.mark.parametrize("aggregate", [None, 2])
+async def test_exact_capture_still_requires_eof_and_successful_exit(cli: Path, control: bool, aggregate: int | None) -> None:
     """Refuse a complete JSON prefix at S when its child exits unsuccessfully."""
     (cli / "crystalline").write_text(f"#!{sys.executable}\nimport os\nos.write(1, b'{{}}')\nraise SystemExit(7)\n")
-    context = EngineContext.capture(max_capture_bytes=2)
+    context = EngineContext.capture(max_capture_bytes=2, max_total_capture_bytes=aggregate)
     if control:
         with pytest.raises(subprocess.CalledProcessError):
             await run_startup_command([str(cli / "crystalline")], context)
     else:
         with pytest.raises(ToolError, match="exit code 7"):
             await run_json(["read"], context=context)
+    (cli / "crystalline").write_text(f"#!{sys.executable}\nprint('{{}}', end='')\n")
+    assert await run_json(["read"], context=context) == {}
