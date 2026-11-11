@@ -4,7 +4,7 @@
 
 Python MCP server named `marabrain-mcp`, built with FastMCP. The interface contains
 six tools and no resources or prompts. `health` takes no arguments and returns
-`{"status": "ok", "version": "0.4.5"}` when every resident workspace's
+`{"status": "ok", "version": "0.4.6"}` when every resident workspace's
 [Crystalline](https://github.com/jordiboehme/crystalline) engine answers
 `crystalline ctl status` within one total health probe deadline. With zero resident
 workspaces, the service is ready and `health` succeeds without starting an engine.
