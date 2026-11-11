@@ -81,9 +81,9 @@ async def test_interleaved_health_and_all_memory_tools_keep_their_engine_context
         ):
             for client, (state, config) in zip((first_client, second_client), expected, strict=True):
                 result = await client.call_tool(tool, arguments if tool == "health" else {"workspace_id": WORKSPACE_ID, **arguments})
-                assert result.structured_content == ({"status": "ok", "version": "0.4.5"} if tool == "health" else {"store": str(state), "config": config})
+                assert result.structured_content == ({"status": "ok", "version": "0.4.6"} if tool == "health" else {"store": str(state), "config": config})
         for client in (first_client, second_client):
-            assert (await client.call_tool("health", {})).structured_content == {"status": "ok", "version": "0.4.5"}
+            assert (await client.call_tool("health", {})).structured_content == {"status": "ok", "version": "0.4.6"}
     for state, config in expected:
         commands = [json.loads(line) for line in (state / "engine-calls").read_text().splitlines()]
         assert len(commands) == 8

@@ -182,7 +182,7 @@ async def health(process: Process) -> None:
         assert activated["id"] == 2 and not activated["result"].get("isError", False)
         await process.stdin.send(b'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"health","arguments":{}}}\n')
         result = json.loads(await reader.receive_until(b"\n", 100000))
-    assert result["result"]["structuredContent"] == {"status": "ok", "version": "0.4.5"}
+    assert result["result"]["structuredContent"] == {"status": "ok", "version": "0.4.6"}
 
 
 async def activation_failed(process: Process, reader: BufferedByteReceiveStream, *, exit_code: int = 0) -> None:
@@ -464,7 +464,7 @@ async def test_managed_http_shares_readiness_and_cleanup(runtime: Path, monkeypa
         async with Client(f"http://127.0.0.1:{unused_tcp_port}/mcp", auth="s" * 32) as client:
             await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "ready"})
             result = await client.call_tool("health", {})
-            assert result.structured_content == {"status": "ok", "version": "0.4.5"}
+            assert result.structured_content == {"status": "ok", "version": "0.4.6"}
         if finish == "term":
             process.send_signal(signal.SIGTERM)
         else:
