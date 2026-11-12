@@ -42,8 +42,9 @@ class LLMSettings(BaseSettings):
     timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 60.0
     compression_cache_max_entries: Annotated[int, Field(strict=True, gt=0)] | None = None
     compression_cache_max_bytes: Annotated[int, Field(strict=True, gt=0)] | None = None
+    compression_cache_total_max_bytes: Annotated[int, Field(strict=True, gt=0)] | None = None
 
-    @field_validator("compression_cache_max_entries", "compression_cache_max_bytes", mode="before")
+    @field_validator("compression_cache_max_entries", "compression_cache_max_bytes", "compression_cache_total_max_bytes", mode="before")
     @classmethod
     def integer_cache_limit(cls, value: JsonValue) -> JsonValue:
         """Parse integer environment strings while preserving strict scalar validation."""
@@ -70,6 +71,8 @@ class LLMSettings(BaseSettings):
             raise PydanticCustomError("incomplete_llm", "Model and provider URL must be configured together")
         if (self.compression_cache_max_entries is None) != (self.compression_cache_max_bytes is None):
             raise PydanticCustomError("incomplete_compression_cache", "Compression cache max entries and max bytes must be configured together")
+        if self.compression_cache_total_max_bytes is not None and self.compression_cache_max_entries is None:
+            raise PydanticCustomError("compression_cache_total_without_limits", "Compression cache total max bytes requires max entries and max bytes")
         if self.provider == LLMProvider.ANTHROPIC and self.temperature is not None:
             raise PydanticCustomError("anthropic_temperature", "Anthropic temperature is not supported")
         return self

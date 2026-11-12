@@ -3,6 +3,8 @@
 import json
 import logging
 import time
+from collections.abc import Callable
+from functools import partial
 from typing import assert_never
 
 import anyio
@@ -77,6 +79,11 @@ def _check_input_size(operation: str, content: str, limit: int | None) -> None:
     if limit is not None and (len(content) > limit or len(content.encode("utf-8")) > limit):
         _LOGGER.error("crystalline.failure operation=%s category=resource_limit elapsed_ms=%.1f", operation, (time.monotonic() - started) * 1000)
         raise ToolError(str(InputSizeError()))
+
+
+def _purge_on_dispatch(cache: CompressionCache | None, workspace_id: str, domain: str, permalink: str) -> Callable[[], None] | None:
+    """Return the callback that drops a mutated memory's cached compressions once its command launches, or None without a cache."""
+    return None if cache is None else partial(cache.purge, domain, permalink, workspace_id=workspace_id)
 
 
 def register_memory_tools(
@@ -189,6 +196,7 @@ def register_memory_tools(
                     command_timeout_seconds,
                     context=runtime.context,
                     deadline=deadline,
+                    on_dispatch=_purge_on_dispatch(compression_cache, workspace_id, resolved, permalink),
                 )
 
     @server.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False})
@@ -200,7 +208,11 @@ def register_memory_tools(
             (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
             with runtime.admission.admit([resolved]):
                 return await run_json(
-                    ["delete", permalink, resolved, "--force"], timeout_seconds=command_timeout_seconds, context=runtime.context, deadline=deadline
+                    ["delete", permalink, resolved, "--force"],
+                    timeout_seconds=command_timeout_seconds,
+                    context=runtime.context,
+                    deadline=deadline,
+                    on_dispatch=_purge_on_dispatch(compression_cache, workspace_id, resolved, permalink),
                 )
 
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False})

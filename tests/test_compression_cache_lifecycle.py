@@ -203,3 +203,63 @@ async def test_shutdown_drains_producer_cleanup_and_wakes_waiters(cancel_lifespa
                 shutdown.set()
         assert stopped.is_set() and provider.calls == provider.cleaned == 1
         assert errors == ["LLM compression failed."]
+
+
+async def test_purge_lets_a_running_flight_answer_every_waiter_without_storing() -> None:
+    """Deliver a purged flight's result to all waiters, retain nothing, and store again for flights started afterwards."""
+    provider = Provider()
+    cache = cache_for(provider)
+    results: list[str] = []
+
+    async def read() -> None:
+        """Record the result one waiter receives."""
+        results.append(await cache.get("notes", "p", "q", "content", workspace_id="test-workspace"))
+
+    with anyio.fail_after(5):
+        async with cache.lifespan():
+            async with anyio.create_task_group() as waiters:
+                waiters.start_soon(read)
+                waiters.start_soon(read)
+                await anyio.wait_all_tasks_blocked()
+                assert provider.calls == 1
+                cache.purge("notes", "p", workspace_id="test-workspace")
+                provider.release.set()
+            assert results == ["context 1"] * 2
+            assert cache._domains == {} and cache._recency == {} and cache._total == 0
+            assert await cache.get("notes", "p", "q", "content", workspace_id="test-workspace") == "context 2"
+            assert await cache.get("notes", "p", "q", "content", workspace_id="test-workspace") == "context 2"
+    assert provider.calls == provider.cleaned == 2
+
+
+async def test_purge_spares_running_flights_of_other_memories() -> None:
+    """Keep storing flights for other permalinks, resolved domains, and workspaces while the purged memory's flight stores nothing."""
+    provider = Provider()
+    cache = cache_for(provider)
+    memories = [
+        ("test-workspace", "notes", "p"),
+        ("test-workspace", "notes", "other"),
+        ("test-workspace", "Exact Name", "p"),
+        ("other-workspace", "notes", "p"),
+    ]
+
+    async def read(memory: tuple[str, str, str]) -> None:
+        """Request one memory's compression with identical query and source text."""
+        workspace, domain, permalink = memory
+        await cache.get(domain, permalink, "q", "content", workspace_id=workspace)
+
+    with anyio.fail_after(5):
+        async with cache.lifespan():
+            async with anyio.create_task_group() as readers:
+                for memory in memories:
+                    readers.start_soon(read, memory)
+                await anyio.wait_all_tasks_blocked()
+                assert provider.calls == 4
+                cache.purge("notes", "p", workspace_id="test-workspace")
+                provider.release.set()
+            assert provider.calls == 4
+            for memory in memories[1:]:
+                await read(memory)
+            assert provider.calls == 4
+            await read(memories[0])
+            assert provider.calls == 5
+    assert provider.cleaned == 5

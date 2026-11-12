@@ -305,6 +305,66 @@ def test_launcher_forwards_input_limits_and_validates_preflight(
                 assert (settings.max_input_bytes, settings.max_total_input_bytes) == tuple(int(value) if value else None for value in expected)
 
 
+@pytest.mark.parametrize(
+    ("exported", "dotenv", "valid"),
+    [
+        *(
+            (values, None, True)
+            for values in ((None, None, None), ("", "", ""), (None, None, ""), ("2", "64", None), ("2", "64", ""), ("2", "64", "128"), ("1", "1", "1"))
+        ),
+        ((None, None, None), ("2", "64", "128"), True),
+        (("invalid", "invalid", "invalid"), ("2", "64", "128"), True),
+        (("2", "64", "128"), ("", "", ""), True),
+        (("2", "64", "128"), (None, None, ""), True),
+        (("2", "64", "128"), ("3", "256", "512"), True),
+        *((("2", "64", value), None, False) for value in ("0", "-1", "1.5", "true", "private-scalar", "{}", "1e3")),
+        *((values, None, False) for values in ((None, None, "128"), ("", "", "128"), ("2", None, "128"), (None, "64", "128"), ("2", "", "128"))),
+        (("2", "64", "128"), ("", "", None), False),
+        (("2", "64", "128"), (None, None, "0"), False),
+    ],
+)
+def test_launcher_forwards_total_ceiling_and_validates_preflight(
+    launcher: Path, exported: tuple[str | None, ...], dotenv: tuple[str | None, ...] | None, valid: bool
+) -> None:
+    """Forward the application-wide cache ceiling to both containers and reject it in preflight without the per-pair limits."""
+    names = ("LLM_COMPRESSION_CACHE_MAX_ENTRIES", "LLM_COMPRESSION_CACHE_MAX_BYTES", "LLM_COMPRESSION_CACHE_TOTAL_MAX_BYTES")
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
+    environment.update(
+        PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}",
+        DOCKER_LOG=str(launcher / "calls"),
+        MARABRAIN_BEARER_SECRET=SECRET,
+        DOCKER_VALIDATE_PREFLIGHT="1",
+    )
+    environment.update((name, value) for name, value in zip(names, exported, strict=True) if value is not None)
+    if dotenv is not None:
+        (launcher / ".env").write_text("".join(f"{name}='{value}'\n" for name, value in zip(names, dotenv, strict=True) if value is not None))
+    result = subprocess.run([str(launcher / "start-from-docker.sh")], env=environment, capture_output=True, text=True, timeout=20, check=False)
+    calls = [json.loads(line) for line in (launcher / "calls").read_text().splitlines()]
+    assert (result.returncode == 0) == valid, result.stderr
+    assert len(calls) == (3 if valid else 2)
+    assert valid or "ValidationError" in result.stderr
+    assert "private-scalar" not in result.stderr
+    expected = tuple(override if override is not None else value for value, override in zip(exported, dotenv or (None,) * 3, strict=True))
+    for call in calls[1:]:
+        with pytest.MonkeyPatch.context() as container:
+            for name in tuple(os.environ):
+                if name.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_")):
+                    container.delenv(name)
+            for name, value in zip(names, expected, strict=True):
+                assert any(call["args"][index : index + 2] == ["--env", name] for index in range(len(call["args"]) - 1))
+                assert call["env"].get(name) == value
+                if value is not None:
+                    container.setenv(name, value)
+            if valid:
+                settings = Settings()
+                limits = tuple(int(value) if value else None for value in expected)
+                assert (
+                    settings.llm.compression_cache_max_entries,
+                    settings.llm.compression_cache_max_bytes,
+                    settings.llm.compression_cache_total_max_bytes,
+                ) == limits
+
+
 @pytest.mark.parametrize("default", [True, False])
 def test_entrypoint_executes_default_managed_and_alternate_directly(tmp_path: Path, default: bool) -> None:
     """Only the default image command forces managed mode and the command is exec'd."""

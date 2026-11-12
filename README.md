@@ -528,6 +528,7 @@ settings are separate from embedding settings; an embedding model cannot generat
 | `LLM_TIMEOUT_SECONDS` | `60` | Provider request timeout in seconds |
 | `LLM_COMPRESSION_CACHE_MAX_ENTRIES` | unset (disabled) | Positive integer retained entry limit applied independently to every workspace and resolved domain pair; requires the byte limit |
 | `LLM_COMPRESSION_CACHE_MAX_BYTES` | unset (disabled) | Positive integer retained compressed UTF-8 payload limit applied independently to every workspace and resolved domain pair; requires the entry limit |
+| `LLM_COMPRESSION_CACHE_TOTAL_MAX_BYTES` | unset (disabled) | Optional strict positive integer ceiling on retained compressed UTF-8 payload across all workspaces and resolved domains in the application; requires the entry and byte limits |
 
 For OpenAI, for example, set `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4.1-mini`,
 and `LLM_PROVIDER_URL=https://api.openai.com/v1`, then supply your `LLM_API_KEY`.
@@ -565,7 +566,25 @@ and nonpositive, boolean, or fractional limits fail validation.
 Each workspace and domain pair evicts least recently used entries to satisfy both limits. `LLM_COMPRESSION_CACHE_MAX_BYTES`
 bounds only retained compressed UTF-8 payload, excluding cache keys, object
 overhead, and in-flight provider data. Oversized results are returned without being
-cached; failures and cancelled work are never cached. Cancelling one caller leaves
+cached; failures and cancelled work are never cached.
+
+Set `LLM_COMPRESSION_CACHE_TOTAL_MAX_BYTES`, for example to `16777216`, to cap the whole application
+as well. It requires the entry and byte limits, and a strict positive integer is parsed exactly
+like they are; empty or unset leaves the per-pair limits as the only bound. Retained compressed UTF-8 payload
+summed across every workspace and domain pair then never exceeds it: when a stored result would
+overflow, the application's least recently used entry is evicted, whichever pair holds it, until the total fits.
+A hit refreshes that recency, the per-pair limits still apply, and a result larger than the per-pair
+byte limit or the total is returned without being cached. A pair left with no entries is dropped from
+the cache.
+
+`edit_memory` and `delete_memory` purge the memory's cached text once their native command has been
+dispatched, whether it then succeeds, fails, or times out, because a failed or timed-out mutation may
+still have been applied. Every entry for that workspace, resolved domain, and permalink is dropped
+under any query. A compression already running for that memory still answers its callers but is
+not cached. Other permalinks, domains, and workspaces keep their entries. A request refused before
+dispatch, such as one for a denied or unresolved domain or rejected by process or domain capacity, purges nothing.
+Purging needs caching to be enabled. It removes derived text from this server's process memory only,
+not from the provider, its logs, or any caller's copy. Cancelling one caller leaves
 shared work available to remaining callers. When the last caller leaves or the
 server shuts down, owned work is cancelled and drained; cleanup can outlast the
 provider timeout and does not guarantee cancellation at the remote provider.
@@ -612,12 +631,13 @@ values disable them, and invalid values fail configuration preflight.
 forwarded identically to both containers, including sourced `.env` overrides; empty or
 unset values disable them, and invalid values fail configuration preflight.
 
-`MARABRAIN_DOMAIN_COMMAND_CAPACITY`, `LLM_COMPRESSION_CACHE_MAX_ENTRIES`, and
-`LLM_COMPRESSION_CACHE_MAX_BYTES` are
+`MARABRAIN_DOMAIN_COMMAND_CAPACITY`, `LLM_COMPRESSION_CACHE_MAX_ENTRIES`,
+`LLM_COMPRESSION_CACHE_MAX_BYTES`, and `LLM_COMPRESSION_CACHE_TOTAL_MAX_BYTES` are
 exported and forwarded identically to configuration preflight and runtime,
 including sourced `.env` overrides. Unset or empty capacity disables domain quotas;
-both cache limits unset or empty disables caching. Invalid scalar values or an
-incomplete cache pair fail preflight before runtime starts.
+both cache limits unset or empty disables caching, and an unset or empty total leaves
+the per-pair limits as the only bound. Invalid scalar values, an
+incomplete cache pair, or a total without the pair fail preflight before runtime starts.
 
 When overriding `MARABRAIN_ALLOWED_HOSTS`, retain `127.0.0.1` alongside your
 public hostname so the container's internal healthcheck remains authorized.
