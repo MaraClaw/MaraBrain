@@ -1,6 +1,8 @@
 """MCP tools that create, read, edit, delete, and search memories through Crystalline."""
 
 import json
+import logging
+import time
 from typing import assert_never
 
 import anyio
@@ -35,9 +37,11 @@ from marabrain.models import (
     Title,
     WorkspaceId,
 )
+from marabrain.transient import InputSizeError
 from marabrain.workspaces import WorkspaceManager
 
 _COMPRESSION_PROGRESS_INTERVAL = 5.0
+_LOGGER = logging.getLogger(__name__)
 
 
 class MemoryContent(BaseModel):
@@ -67,6 +71,14 @@ def _edit_arguments(operation: EditOperation) -> list[str]:
     assert_never(operation)
 
 
+def _check_input_size(operation: str, content: str, limit: int | None) -> None:
+    """Refuse content over the per-command UTF-8 ceiling before any workspace is leased."""
+    started = time.monotonic()
+    if limit is not None and (len(content) > limit or len(content.encode("utf-8")) > limit):
+        _LOGGER.error("crystalline.failure operation=%s category=resource_limit elapsed_ms=%.1f", operation, (time.monotonic() - started) * 1000)
+        raise ToolError(str(InputSizeError()))
+
+
 def register_memory_tools(
     server: FastMCP,
     manager: WorkspaceManager,
@@ -75,6 +87,7 @@ def register_memory_tools(
     llm_settings: LLMSettings | None = None,
     operation_timeout_seconds: float | None = None,
     compression_cache: CompressionCache | None = None,
+    max_input_bytes: int | None = None,
 ) -> None:
     """Register five memory tools bound to the application's workspace manager and its lifespan."""
 
@@ -89,6 +102,7 @@ def register_memory_tools(
         metadata: Metadata | None = None,
     ) -> JsonObject:
         """Create a new Markdown memory in a domain; an existing memory is never overwritten. Returns Crystalline's receipt, including its permalink."""
+        _check_input_size("write", content, max_input_bytes)
         deadline = deadline_after(operation_timeout_seconds)
         manager.admit([domain])
         options = [
@@ -161,6 +175,7 @@ def register_memory_tools(
         workspace_id: WorkspaceId, domain: Domain, permalink: Permalink, operation: EditOperation, expected_checksum: Checksum | None = None
     ) -> JsonObject:
         """Edit an existing memory with one operation; expected_checksum from read_memory refuses the edit if the memory changed since."""
+        _check_input_size("edit", operation.content, max_input_bytes)
         deadline = deadline_after(operation_timeout_seconds)
         manager.admit([domain])
         checksum = [] if expected_checksum is None else [f"--expected-checksum={expected_checksum}"]

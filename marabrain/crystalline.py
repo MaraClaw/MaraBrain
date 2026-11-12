@@ -69,7 +69,9 @@ async def _run_command(arguments: Sequence[str], data: bytes, context: EngineCon
     try:
         await anyio.lowlevel.checkpoint()
         check_deadline(deadline)
-        with context.data_transients.admit():
+        # Admit first, then reserve stdin: a refusal of either releases the other, and the budget is touched only when a child will launch.
+        # Both holds end after the worker joins, including cancellation before the child exists and launch failure.
+        with context.data_transients.admit(), context.transients.reserve_input(len(data)):
             worker = threading.Thread(target=execute, name="marabrain-cli")
             worker.start()
             try:

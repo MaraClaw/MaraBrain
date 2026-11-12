@@ -34,6 +34,7 @@ class EngineContext:
                 settings.max_total_capture_bytes,
                 max_workspace_transient_processes=settings.max_workspace_transient_processes,
                 max_workspace_capture_bytes=settings.max_workspace_capture_bytes,
+                max_total_input_bytes=settings.max_total_input_bytes,
             ),
         )
 
@@ -76,6 +77,7 @@ class EngineContext:
         max_total_capture_bytes: int | None = None,
         max_workspace_transient_processes: int | None = None,
         max_workspace_capture_bytes: int | None = None,
+        max_total_input_bytes: int | None = None,
     ) -> EngineContext:
         """Snapshot the environment and pin filesystem defaults before ambient state changes."""
         environment = dict(os.environ)
@@ -103,5 +105,6 @@ class EngineContext:
             max_total_capture_bytes,
             max_workspace_transient_processes=max_workspace_transient_processes,
             max_workspace_capture_bytes=max_workspace_capture_bytes,
+            max_total_input_bytes=max_total_input_bytes,
         )
         return cls(environment, Path(environment["XDG_STATE_HOME"]), fingerprint, transients)

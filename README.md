@@ -243,6 +243,8 @@ Rotate the credential by updating both the server and backend and restarting the
 | `MARABRAIN_MAX_TOTAL_CAPTURE_BYTES` | unset (disabled) | Optional strict positive integer application-wide budget for retained raw stdout payload across workspaces and data/control commands; empty also disables it |
 | `MARABRAIN_MAX_WORKSPACE_TRANSIENT_PROCESSES` | unset (disabled) | Optional strict positive integer share of transient memory and registry processes one workspace may hold at once; empty also disables it |
 | `MARABRAIN_MAX_WORKSPACE_CAPTURE_BYTES` | unset (disabled) | Optional strict positive integer share of retained raw stdout payload one workspace's memory and registry commands may hold at once; empty also disables it |
+| `MARABRAIN_MAX_INPUT_BYTES` | unset (disabled) | Optional strict positive integer ceiling on one `create_memory` or `edit_memory` content, in UTF-8 bytes; empty also disables it |
+| `MARABRAIN_MAX_TOTAL_INPUT_BYTES` | unset (disabled) | Optional strict positive integer application-wide budget of stdin bytes held by in-flight writes across workspaces; empty also disables it |
 | `MARABRAIN_DOMAIN_COMMAND_CAPACITY` | unset (disabled) | Optional positive integer final-command capacity applied independently to every workspace and resolved domain pair; empty also disables it |
 | `MARABRAIN_MAX_RESIDENT_WORKSPACES` | unset (disabled) | Optional strict positive integer cap on owned workspace runtimes in managed mode; empty also disables it; configured external mode is rejected |
 | `MARABRAIN_ENGINE_MODE` | `external` | `external` or `managed`; Docker's default command selects `managed` |
@@ -388,6 +390,29 @@ enlarge its share while earlier commands finish; separate applications keep inde
 counters. Unset or empty disables each share and preserves existing behavior;
 malformed, boolean, fractional, zero, and negative values are rejected without
 exposing input.
+
+`MARABRAIN_MAX_INPUT_BYTES=S` limits the UTF-8 size of the `content` sent on stdin by
+`create_memory` and by every `edit_memory` operation. Exactly S bytes pass and S plus
+one byte is refused; multibyte text is counted in encoded bytes, not characters. The
+check runs before the workspace is leased, so a refused call runs no Crystalline command,
+activates no workspace, and retires no other tenant's idle runtime.
+
+`MARABRAIN_MAX_TOTAL_INPUT_BYTES=T` independently limits the stdin bytes held by
+in-flight commands across all workspaces in one application. The encoded size is
+reserved before the child or CLI worker is created and refused immediately, without
+queuing, when it does not fit. It is released once, after the child is reaped and its
+worker has joined, on success, nonzero exit, timeout, cancellation (including before the
+child exists), and launch failure. Commands without stdin, such as reads, deletes,
+searches, registry commands, and health or readiness probes, reserve nothing. Separate
+applications have independent budgets. Both input limits are independent of the transient
+process slots and the capture limits.
+
+A write refused by either input limit is never dispatched, so the fixed error says so and
+does not claim a mutation may have been applied; it carries no payload or size. Refusals are
+logged with the `resource_limit` category, without arguments or content. Counts cover
+stdin content only, not the request's other arguments, parsed objects, or allocator
+overhead. Unset or empty preserves existing behavior; boolean, fractional, malformed,
+zero, and negative values are rejected without exposing input.
 
 Environment variables are read at startup. An originless MCP client is accepted;
 browser clients must use an explicitly allowed origin. Avoid wildcard host or
@@ -582,6 +607,10 @@ unset or empty caps preserve unbounded residency.
 exported and forwarded identically to both containers, including sourced `.env`
 overrides. Both containers parse the same optional integer limits; empty or unset
 values disable them, and invalid values fail configuration preflight.
+
+`MARABRAIN_MAX_INPUT_BYTES` and `MARABRAIN_MAX_TOTAL_INPUT_BYTES` are exported and
+forwarded identically to both containers, including sourced `.env` overrides; empty or
+unset values disable them, and invalid values fail configuration preflight.
 
 `MARABRAIN_DOMAIN_COMMAND_CAPACITY`, `LLM_COMPRESSION_CACHE_MAX_ENTRIES`, and
 `LLM_COMPRESSION_CACHE_MAX_BYTES` are

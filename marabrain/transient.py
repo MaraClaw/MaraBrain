@@ -1,4 +1,4 @@
-"""Application-owned immediate subprocess admission and bounded raw stdout storage."""
+"""Application-owned immediate subprocess admission, bounded raw stdout storage, and in-flight stdin reservations."""
 
 import threading
 from collections.abc import Generator
@@ -28,6 +28,26 @@ class CaptureLimitError(TransientLimitError):
     def __str__(self) -> str:
         """Return a fixed error without the rejected payload."""
         return "Crystalline output exceeded the capture limit; a mutation may or may not have been applied."
+
+
+class InputLimitError(TransientLimitError):
+    """A write's stdin was refused before dispatch, so nothing reached the engine."""
+
+
+class InputSizeError(InputLimitError):
+    """One write's UTF-8 stdin exceeded the per-command ceiling."""
+
+    def __str__(self) -> str:
+        """Return a fixed error without the rejected payload or any size."""
+        return "Crystalline write payload exceeds the input size limit; the write was not dispatched."
+
+
+class InputBudgetError(InputLimitError):
+    """The application-wide in-flight stdin budget could not hold one more payload."""
+
+    def __str__(self) -> str:
+        """Return a fixed error without the rejected payload or any size."""
+        return "Crystalline input capacity is exhausted; the write was not dispatched."
 
 
 class CaptureBudget:
@@ -122,6 +142,28 @@ class WorkspaceLedger:
                 del held[workspace_id]
 
 
+class InputBudget:
+    """Mutate one application-wide counter of stdin bytes held by in-flight commands atomically."""
+
+    def __init__(self, limit: int) -> None:
+        """Start with no reserved stdin bytes."""
+        self.limit = limit
+        self._reserved = 0
+        self._lock = threading.Lock()
+
+    def reserve(self, size: int) -> None:
+        """Refuse a payload that does not fit now, without waiting or reserving part of it."""
+        with self._lock:
+            if self._reserved + size > self.limit:
+                raise InputBudgetError()
+            self._reserved += size
+
+    def release(self, size: int) -> None:
+        """Return the bytes of exactly one earlier successful reservation."""
+        with self._lock:
+            self._reserved -= size
+
+
 @dataclass(frozen=True, slots=True)
 class TransientRuntime:
     """Keep independent data/control slots shareable across threads and event loops."""
@@ -135,6 +177,8 @@ class TransientRuntime:
     max_workspace_transient_processes: int | None = field(default=None, kw_only=True)
     max_workspace_capture_bytes: int | None = field(default=None, kw_only=True)
     workspace_ledger: WorkspaceLedger = field(init=False, repr=False, compare=False)
+    max_total_input_bytes: int | None = field(default=None, kw_only=True)
+    input_budget: InputBudget | None = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Create immediate admission counters without an async waiter queue."""
@@ -142,6 +186,7 @@ class TransientRuntime:
         object.__setattr__(self, "_control", None if self.capacity is None else threading.BoundedSemaphore(1))
         object.__setattr__(self, "capture_budget", None if self.max_total_capture_bytes is None else CaptureBudget(self.max_total_capture_bytes))
         object.__setattr__(self, "workspace_ledger", WorkspaceLedger(self.max_workspace_transient_processes, self.max_workspace_capture_bytes))
+        object.__setattr__(self, "input_budget", None if self.max_total_input_bytes is None else InputBudget(self.max_total_input_bytes))
 
     @contextmanager
     def admit(self, *, control: bool = False) -> Generator[None]:
@@ -154,6 +199,24 @@ class TransientRuntime:
         finally:
             if slots is not None:
                 slots.release()
+
+    @contextmanager
+    def reserve_input(self, size: int) -> Generator[None]:
+        """Hold stdin bytes until the caller has reaped its child and joined its workers.
+
+        A command without stdin reserves nothing. A payload that does not fit is refused
+        immediately with `InputBudgetError`, and nothing is held. Enter this after `admit()`
+        in one `with` statement: a refusal by either leaves the other released, and the
+        budget is touched only by commands that will launch a child.
+        """
+        budget = self.input_budget if size else None
+        if budget is not None:
+            budget.reserve(size)
+        try:
+            yield
+        finally:
+            if budget is not None:
+                budget.release(size)
 
     def for_workspace(self, workspace_id: str) -> WorkspaceTransients | None:
         """Return a data-lane view charging this workspace's share, or None when shares are disabled."""

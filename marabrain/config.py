@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     max_total_capture_bytes: Annotated[int, Field(strict=True, gt=0)] | None = None
     max_workspace_transient_processes: Annotated[int, Field(strict=True, gt=0)] | None = None
     max_workspace_capture_bytes: Annotated[int, Field(strict=True, gt=0)] | None = None
+    max_input_bytes: Annotated[int, Field(strict=True, gt=0)] | None = None
+    max_total_input_bytes: Annotated[int, Field(strict=True, gt=0)] | None = None
     max_resident_workspaces: Annotated[int, Field(strict=True, gt=0)] | None = None
     engine_mode: EngineMode = EngineMode.EXTERNAL
     engine_startup_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 30.0
@@ -63,6 +65,8 @@ class Settings(BaseSettings):
         "max_total_capture_bytes",
         "max_workspace_transient_processes",
         "max_workspace_capture_bytes",
+        "max_input_bytes",
+        "max_total_input_bytes",
         mode="before",
     )
     @classmethod

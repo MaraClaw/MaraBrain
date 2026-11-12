@@ -117,6 +117,8 @@ def test_bad_domains_rejected(monkeypatch: pytest.MonkeyPatch, value: str) -> No
         "max_total_capture_bytes",
         "max_workspace_transient_processes",
         "max_workspace_capture_bytes",
+        "max_input_bytes",
+        "max_total_input_bytes",
     ],
 )
 def test_strict_limit_parses_optional_integer(monkeypatch: pytest.MonkeyPatch, value: str | None, expected: int | None, name: str) -> None:
@@ -155,6 +157,8 @@ def test_strict_limit_parses_optional_integer(monkeypatch: pytest.MonkeyPatch, v
         "max_total_capture_bytes",
         "max_workspace_transient_processes",
         "max_workspace_capture_bytes",
+        "max_input_bytes",
+        "max_total_input_bytes",
     ],
 )
 def test_strict_limit_rejects_redacted_environment_values(monkeypatch: pytest.MonkeyPatch, value: str, name: str) -> None:
@@ -176,6 +180,8 @@ def test_strict_limit_rejects_redacted_environment_values(monkeypatch: pytest.Mo
         "max_total_capture_bytes",
         "max_workspace_transient_processes",
         "max_workspace_capture_bytes",
+        "max_input_bytes",
+        "max_total_input_bytes",
     ],
 )
 def test_strict_limit_rejects_invalid_constructor_values(value: JsonValue, name: str) -> None:
@@ -193,3 +199,17 @@ def test_domain_command_capacity_is_frozen() -> None:
         setattr(settings, "domain_command_capacity", 3)
     assert invalid.value.errors()[0]["type"] == "frozen_instance"
     assert settings.domain_command_capacity == 2
+
+
+def test_input_limits_default_to_disabled_and_stay_independent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave each input limit disabled unless set, without coupling it to the other or to capture limits."""
+    for name in ("MAX_INPUT_BYTES", "MAX_TOTAL_INPUT_BYTES", "MAX_CAPTURE_BYTES", "MAX_TOTAL_CAPTURE_BYTES"):
+        monkeypatch.delenv(f"MARABRAIN_{name}", raising=False)
+    defaults = Settings()
+    assert (defaults.max_input_bytes, defaults.max_total_input_bytes) == (None, None)
+    monkeypatch.setenv("MARABRAIN_MAX_INPUT_BYTES", "7")
+    assert (Settings().max_input_bytes, Settings().max_total_input_bytes) == (7, None)
+    monkeypatch.setenv("MARABRAIN_MAX_TOTAL_INPUT_BYTES", "9")
+    monkeypatch.setenv("MARABRAIN_MAX_INPUT_BYTES", "")
+    assert (Settings().max_input_bytes, Settings().max_total_input_bytes) == (None, 9)
+    assert (Settings().max_capture_bytes, Settings().max_total_capture_bytes) == (None, None)

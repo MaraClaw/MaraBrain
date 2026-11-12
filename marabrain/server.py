@@ -108,6 +108,7 @@ def create_server(settings: Settings, *, context: EngineContext | None = None, _
         llm_settings=settings.llm,
         operation_timeout_seconds=settings.operation_timeout_seconds,
         compression_cache=cache,
+        max_input_bytes=settings.max_input_bytes,
     )
     return server
 
