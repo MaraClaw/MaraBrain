@@ -110,7 +110,15 @@ def test_bad_domains_rejected(monkeypatch: pytest.MonkeyPatch, value: str) -> No
 
 
 @pytest.mark.parametrize("value,expected", [(None, None), ("", None), ("1", 1), ("2", 2), ("65536", 65536)])
-@pytest.mark.parametrize("name", ["domain_command_capacity", "max_total_capture_bytes"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "domain_command_capacity",
+        "max_total_capture_bytes",
+        "max_workspace_transient_processes",
+        "max_workspace_capture_bytes",
+    ],
+)
 def test_strict_limit_parses_optional_integer(monkeypatch: pytest.MonkeyPatch, value: str | None, expected: int | None, name: str) -> None:
     """Parse one positive capacity while leaving absent or empty values disabled."""
     monkeypatch.delenv(f"MARABRAIN_{name.upper()}", raising=False)
@@ -140,7 +148,15 @@ def test_strict_limit_parses_optional_integer(monkeypatch: pytest.MonkeyPatch, v
         '{"private-secret": 2}',
     ],
 )
-@pytest.mark.parametrize("name", ["domain_command_capacity", "max_total_capture_bytes"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "domain_command_capacity",
+        "max_total_capture_bytes",
+        "max_workspace_transient_processes",
+        "max_workspace_capture_bytes",
+    ],
+)
 def test_strict_limit_rejects_redacted_environment_values(monkeypatch: pytest.MonkeyPatch, value: str, name: str) -> None:
     """Reject malformed or nonpositive scalars without exposing rejected input."""
     monkeypatch.setenv(f"MARABRAIN_{name.upper()}", value)
@@ -153,7 +169,15 @@ def test_strict_limit_rejects_redacted_environment_values(monkeypatch: pytest.Mo
 
 
 @pytest.mark.parametrize("value", [True, False, 2.5, 1.0, 0, -1, {"notes": 2}, [], "invalid-secret"])
-@pytest.mark.parametrize("name", ["domain_command_capacity", "max_total_capture_bytes"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "domain_command_capacity",
+        "max_total_capture_bytes",
+        "max_workspace_transient_processes",
+        "max_workspace_capture_bytes",
+    ],
+)
 def test_strict_limit_rejects_invalid_constructor_values(value: JsonValue, name: str) -> None:
     """Reject boolean and float coercion as well as invalid scalar constructor values."""
     with pytest.raises(ValidationError) as invalid:

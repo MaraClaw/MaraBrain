@@ -21,9 +21,11 @@ from test_docker_runtime import launcher as launcher
         *[("4096", value, value, False) for value in ("0", "-1", "true", "1.0", "2.5", "private-scalar")],
     ],
 )
-def test_launcher_validates_and_forwards_aggregate_budget(launcher: Path, exported: str | None, dotenv: str | None, expected: str | None, valid: bool) -> None:
-    """Apply sourced precedence and identical aggregate policy while preserving managed residency forwarding."""
-    name = "MARABRAIN_MAX_TOTAL_CAPTURE_BYTES"
+@pytest.mark.parametrize("name", ["MARABRAIN_MAX_TOTAL_CAPTURE_BYTES", "MARABRAIN_MAX_WORKSPACE_TRANSIENT_PROCESSES", "MARABRAIN_MAX_WORKSPACE_CAPTURE_BYTES"])
+def test_launcher_validates_and_forwards_aggregate_budget(
+    launcher: Path, name: str, exported: str | None, dotenv: str | None, expected: str | None, valid: bool
+) -> None:
+    """Apply sourced precedence and identical aggregate or workspace-share policy while preserving managed residency forwarding."""
     environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
     environment.update(
         PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}",

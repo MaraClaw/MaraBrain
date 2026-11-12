@@ -25,7 +25,7 @@ _OPERATIONS = frozenset({"write", "read", "edit", "delete", "search"})
 async def _run_command(arguments: Sequence[str], data: bytes, context: EngineContext, deadline: float) -> subprocess.CompletedProcess[StdoutCapture]:
     """Retain ownership through launch cancellation and reap the CLI before returning."""
     result = Future[subprocess.CompletedProcess[StdoutCapture]]()
-    capture = StdoutCapture(context.transients.max_capture_bytes, context.transients.capture_budget)
+    capture = StdoutCapture(context.data_transients.max_capture_bytes, context.data_transients.capture_budget)
     delivered = False
     cancelled = threading.Event()
     finished = anyio.Event()
@@ -69,7 +69,7 @@ async def _run_command(arguments: Sequence[str], data: bytes, context: EngineCon
     try:
         await anyio.lowlevel.checkpoint()
         check_deadline(deadline)
-        with context.transients.admit():
+        with context.data_transients.admit():
             worker = threading.Thread(target=execute, name="marabrain-cli")
             worker.start()
             try:

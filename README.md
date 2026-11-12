@@ -241,6 +241,8 @@ Rotate the credential by updating both the server and backend and restarting the
 | `MARABRAIN_MAX_TRANSIENT_PROCESSES` | unset (disabled) | Optional application-wide integer capacity of at least 2 for transient engine commands across workspaces; empty also disables it |
 | `MARABRAIN_MAX_CAPTURE_BYTES` | unset (disabled) | Optional positive integer ceiling on raw stdout bytes per captured child; empty also disables it |
 | `MARABRAIN_MAX_TOTAL_CAPTURE_BYTES` | unset (disabled) | Optional strict positive integer application-wide budget for retained raw stdout payload across workspaces and data/control commands; empty also disables it |
+| `MARABRAIN_MAX_WORKSPACE_TRANSIENT_PROCESSES` | unset (disabled) | Optional strict positive integer share of transient memory and registry processes one workspace may hold at once; empty also disables it |
+| `MARABRAIN_MAX_WORKSPACE_CAPTURE_BYTES` | unset (disabled) | Optional strict positive integer share of retained raw stdout payload one workspace's memory and registry commands may hold at once; empty also disables it |
 | `MARABRAIN_DOMAIN_COMMAND_CAPACITY` | unset (disabled) | Optional positive integer final-command capacity applied independently to every workspace and resolved domain pair; empty also disables it |
 | `MARABRAIN_MAX_RESIDENT_WORKSPACES` | unset (disabled) | Optional strict positive integer cap on owned workspace runtimes in managed mode; empty also disables it; configured external mode is rejected |
 | `MARABRAIN_ENGINE_MODE` | `external` | `external` or `managed`; Docker's default command selects `managed` |
@@ -363,6 +365,29 @@ not an RSS or allocator guarantee: parsed objects, allocator slack, fixed read a
 transport buffers, stdin, stderr, daemon diagnostics, and LLM responses are excluded.
 Unset or empty preserves existing capture allocation behavior. Boolean, fractional,
 malformed, zero, and negative aggregate budgets are rejected without exposing input.
+
+`MARABRAIN_MAX_WORKSPACE_TRANSIENT_PROCESSES=P` and `MARABRAIN_MAX_WORKSPACE_CAPTURE_BYTES=B`
+add independent per-workspace shares on top of the application limits, which keep applying.
+For example, with `MARABRAIN_MAX_TRANSIENT_PROCESSES=9` and
+`MARABRAIN_MAX_WORKSPACE_TRANSIENT_PROCESSES=3`, one workspace's memory and registry
+commands hold at most three of the eight shared data slots, so a flooding tenant is
+refused while other workspaces keep running. Likewise, one workspace's retained raw
+stdout payload never exceeds B bytes, and it also counts against
+`MARABRAIN_MAX_TOTAL_CAPTURE_BYTES` when that budget is set. Either share works
+without the corresponding application limit.
+
+Each command acquires its workspace share and the application limit together or not
+at all: a refusal at either level leaves no charge at the other. Refusal is immediate
+with the same fixed process-capacity or capture-limit error; there is no queue, and
+the error names no workspace. Charges last until the child is reaped, its worker
+has joined, and its output is parsed or discarded, including on timeout, cancellation,
+and launch failure. Health, readiness, and embedding initialization keep using the
+reserved control slot and are never charged to a workspace share. Shares are counted
+per workspace ID within one application, so reactivating a retired workspace cannot
+enlarge its share while earlier commands finish; separate applications keep independent
+counters. Unset or empty disables each share and preserves existing behavior;
+malformed, boolean, fractional, zero, and negative values are rejected without
+exposing input.
 
 Environment variables are read at startup. An originless MCP client is accepted;
 browser clients must use an explicitly allowed origin. Avoid wildcard host or
@@ -551,8 +576,9 @@ use `MARABRAIN_ENGINE_MODE=managed`, including the alternate preflight command, 
 local `external` setting does not reject a valid Docker cap. Invalid caps fail preflight;
 unset or empty caps preserve unbounded residency.
 
-`MARABRAIN_MAX_TRANSIENT_PROCESSES`, `MARABRAIN_MAX_CAPTURE_BYTES`, and
-`MARABRAIN_MAX_TOTAL_CAPTURE_BYTES` are also
+`MARABRAIN_MAX_TRANSIENT_PROCESSES`, `MARABRAIN_MAX_CAPTURE_BYTES`,
+`MARABRAIN_MAX_TOTAL_CAPTURE_BYTES`, `MARABRAIN_MAX_WORKSPACE_TRANSIENT_PROCESSES`, and
+`MARABRAIN_MAX_WORKSPACE_CAPTURE_BYTES` are also
 exported and forwarded identically to both containers, including sourced `.env`
 overrides. Both containers parse the same optional integer limits; empty or unset
 values disable them, and invalid values fail configuration preflight.
