@@ -6,7 +6,7 @@
 ## OVERVIEW
 
 Python FastMCP server named `marabrain-mcp`. Its MCP interface exposes exactly six
-tools and no resources or prompts: `health`, returning `{"status":"ok","version":"0.4.6"}`,
+tools and no resources or prompts: `health`, returning `{"status":"ok","version":"0.4.7"}`,
 and `create_memory`, `read_memory`, `edit_memory`, `delete_memory`, and `search_memories`,
 which run the pinned Crystalline CLI and return its native JSON. Health also requires the
 Crystalline daemon to answer `crystalline ctl status` within two seconds; engine failure is a tool error.

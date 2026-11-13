@@ -216,7 +216,7 @@ async def test_saturated_domain_keeps_health_and_other_domains_available(cli: Pa
                     with pytest.raises(ToolError, match="domain command capacity is exhausted"):
                         await client.call_tool("search_memories", {"workspace_id": WORKSPACE_ID, "query": "r", "domains": ["notes"]})
                     assert len(calls(cli)) == 1
-                    assert (await client.call_tool("health")).structured_content == {"status": "ok", "version": "0.4.6"}
+                    assert (await client.call_tool("health")).structured_content == {"status": "ok", "version": "0.4.7"}
                     assert (
                         await client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "other", "permalink": "one"})
                     ).structured_content == RECEIPT
@@ -463,7 +463,7 @@ async def test_input_budget_over_mcp_refuses_only_writes_and_across_workspaces(c
                     ):
                         await client.call_tool(tool, {"workspace_id": "second", **arguments})
                     assert [command[1] for command in argv(cli)[1:]] == ["read", "delete", "search", "write"]
-                    assert (await client.call_tool("health")).structured_content == {"status": "ok", "version": "0.4.6"}
+                    assert (await client.call_tool("health")).structured_content == {"status": "ok", "version": "0.4.7"}
                 finally:
                     release.set()
         assert_input_idle(context, 4)

@@ -105,7 +105,7 @@ async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFac
         )
         async with Client(transport, timeout=30, init_timeout=120) as client:
             health = payload(await client.call_tool("health"))
-            assert health == {"status": "ok", "version": "0.4.6"}
+            assert health == {"status": "ok", "version": "0.4.7"}
 
             target = {"domain": "integration", "permalink": "lunar-greenhouse"}
             request_target = {"workspace_id": workspace_id, **target}

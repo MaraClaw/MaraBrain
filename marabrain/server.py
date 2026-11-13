@@ -34,7 +34,7 @@ class HealthResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     status: Literal["ok"] = "ok"
-    version: Literal["0.4.6"] = __version__
+    version: Literal["0.4.7"] = __version__
 
 
 class BearerVerifier(TokenVerifier):
