@@ -36,7 +36,7 @@ class EngineStatus(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    version: Literal["0.32.0"]
+    version: Literal["0.32.1"]
     pid: int
     http: None
     embeddings: EmbeddingsStatus
@@ -60,7 +60,7 @@ def payload(result: CallToolResult) -> dict[str, JsonValue]:
 async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFactory) -> None:
     """Round-trip a memory through real MCP tools and local embedding search, then stop the daemon."""
     executable = shutil.which("crystalline")
-    assert executable is not None, "Install Crystalline 0.32.0 on PATH before running tests/integration."
+    assert executable is not None, "Install Crystalline 0.32.1 on PATH before running tests/integration."
     root = tmp_path_factory.getbasetemp().resolve()
     environment = {
         "PATH": os.pathsep.join((str(Path(executable).parent), os.defpath)),
@@ -84,7 +84,7 @@ async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFac
 
     with anyio.fail_after(360):
         version = await run_cli(["--version"], environment)
-        assert version.stdout.decode().splitlines()[0] == "crystalline 0.32.0"
+        assert version.stdout.decode().splitlines()[0] == "crystalline 0.32.1"
         await run_cli(["--json", "model", "download"], environment, timeout=240)
         workspace_id = "integration-primary"
         contexts: dict[str, EngineContext] = {}

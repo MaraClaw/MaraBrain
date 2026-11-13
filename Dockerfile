@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 FROM ghcr.io/astral-sh/uv:0.13.7 AS uv
-FROM ghcr.io/jordiboehme/crystalline:0.32.0@sha256:b0dedcdb2858e83c0f00f850c3e68b99c6561cd0d8045aa809d0b416ef302977 AS crystalline
+FROM ghcr.io/jordiboehme/crystalline:0.32.1@sha256:88bc0b35ba9e91aa05deae05c8623e2a9af3d1d8b8d30057e20663b0e1e51052 AS crystalline
 FROM python:3.15.2-slim AS builder
 COPY --from=uv /uv /usr/local/bin/uv
 WORKDIR /app
