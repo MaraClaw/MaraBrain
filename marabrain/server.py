@@ -34,7 +34,7 @@ class HealthResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     status: Literal["ok"] = "ok"
-    version: Literal["0.4.6"] = __version__
+    version: Literal["0.4.7"] = __version__
 
 
 class BearerVerifier(TokenVerifier):
@@ -108,6 +108,7 @@ def create_server(settings: Settings, *, context: EngineContext | None = None, _
         llm_settings=settings.llm,
         operation_timeout_seconds=settings.operation_timeout_seconds,
         compression_cache=cache,
+        max_input_bytes=settings.max_input_bytes,
     )
     return server
 

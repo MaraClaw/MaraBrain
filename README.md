@@ -4,7 +4,7 @@
 
 Python MCP server named `marabrain-mcp`, built with FastMCP. The interface contains
 six tools and no resources or prompts. `health` takes no arguments and returns
-`{"status": "ok", "version": "0.4.6"}` when every resident workspace's
+`{"status": "ok", "version": "0.4.7"}` when every resident workspace's
 [Crystalline](https://github.com/jordiboehme/crystalline) engine answers
 `crystalline ctl status` within one total health probe deadline. With zero resident
 workspaces, the service is ready and `health` succeeds without starting an engine.
@@ -14,7 +14,7 @@ The other five tools manage memories through the Crystalline CLI; see [Memory to
 
 ## Memory tools
 
-The tools run the pinned Crystalline 0.32.0 `crystalline --json` command without a shell,
+The tools run the pinned Crystalline 0.32.1 `crystalline --json` command without a shell,
 send content on stdin, and return its JSON object unchanged (native fields, no added keys)
 unless `read_memory` is called with `compress=true`, as described below.
 All five memory tools require `workspace_id`: a strict, case-sensitive ASCII string
@@ -241,6 +241,10 @@ Rotate the credential by updating both the server and backend and restarting the
 | `MARABRAIN_MAX_TRANSIENT_PROCESSES` | unset (disabled) | Optional application-wide integer capacity of at least 2 for transient engine commands across workspaces; empty also disables it |
 | `MARABRAIN_MAX_CAPTURE_BYTES` | unset (disabled) | Optional positive integer ceiling on raw stdout bytes per captured child; empty also disables it |
 | `MARABRAIN_MAX_TOTAL_CAPTURE_BYTES` | unset (disabled) | Optional strict positive integer application-wide budget for retained raw stdout payload across workspaces and data/control commands; empty also disables it |
+| `MARABRAIN_MAX_WORKSPACE_TRANSIENT_PROCESSES` | unset (disabled) | Optional strict positive integer share of transient memory and registry processes one workspace may hold at once; empty also disables it |
+| `MARABRAIN_MAX_WORKSPACE_CAPTURE_BYTES` | unset (disabled) | Optional strict positive integer share of retained raw stdout payload one workspace's memory and registry commands may hold at once; empty also disables it |
+| `MARABRAIN_MAX_INPUT_BYTES` | unset (disabled) | Optional strict positive integer ceiling on one `create_memory` or `edit_memory` content, in UTF-8 bytes; empty also disables it |
+| `MARABRAIN_MAX_TOTAL_INPUT_BYTES` | unset (disabled) | Optional strict positive integer application-wide budget of stdin bytes held by in-flight writes across workspaces; empty also disables it |
 | `MARABRAIN_DOMAIN_COMMAND_CAPACITY` | unset (disabled) | Optional positive integer final-command capacity applied independently to every workspace and resolved domain pair; empty also disables it |
 | `MARABRAIN_MAX_RESIDENT_WORKSPACES` | unset (disabled) | Optional strict positive integer cap on owned workspace runtimes in managed mode; empty also disables it; configured external mode is rejected |
 | `MARABRAIN_ENGINE_MODE` | `external` | `external` or `managed`; Docker's default command selects `managed` |
@@ -364,6 +368,52 @@ transport buffers, stdin, stderr, daemon diagnostics, and LLM responses are excl
 Unset or empty preserves existing capture allocation behavior. Boolean, fractional,
 malformed, zero, and negative aggregate budgets are rejected without exposing input.
 
+`MARABRAIN_MAX_WORKSPACE_TRANSIENT_PROCESSES=P` and `MARABRAIN_MAX_WORKSPACE_CAPTURE_BYTES=B`
+add independent per-workspace shares on top of the application limits, which keep applying.
+For example, with `MARABRAIN_MAX_TRANSIENT_PROCESSES=9` and
+`MARABRAIN_MAX_WORKSPACE_TRANSIENT_PROCESSES=3`, one workspace's memory and registry
+commands hold at most three of the eight shared data slots, so a flooding tenant is
+refused while other workspaces keep running. Likewise, one workspace's retained raw
+stdout payload never exceeds B bytes, and it also counts against
+`MARABRAIN_MAX_TOTAL_CAPTURE_BYTES` when that budget is set. Either share works
+without the corresponding application limit.
+
+Each command acquires its workspace share and the application limit together or not
+at all: a refusal at either level leaves no charge at the other. Refusal is immediate
+with the same fixed process-capacity or capture-limit error; there is no queue, and
+the error names no workspace. Charges last until the child is reaped, its worker
+has joined, and its output is parsed or discarded, including on timeout, cancellation,
+and launch failure. Health, readiness, and embedding initialization keep using the
+reserved control slot and are never charged to a workspace share. Shares are counted
+per workspace ID within one application, so reactivating a retired workspace cannot
+enlarge its share while earlier commands finish; separate applications keep independent
+counters. Unset or empty disables each share and preserves existing behavior;
+malformed, boolean, fractional, zero, and negative values are rejected without
+exposing input.
+
+`MARABRAIN_MAX_INPUT_BYTES=S` limits the UTF-8 size of the `content` sent on stdin by
+`create_memory` and by every `edit_memory` operation. Exactly S bytes pass and S plus
+one byte is refused; multibyte text is counted in encoded bytes, not characters. The
+check runs before the workspace is leased, so a refused call runs no Crystalline command,
+activates no workspace, and retires no other tenant's idle runtime.
+
+`MARABRAIN_MAX_TOTAL_INPUT_BYTES=T` independently limits the stdin bytes held by
+in-flight commands across all workspaces in one application. The encoded size is
+reserved before the child or CLI worker is created and refused immediately, without
+queuing, when it does not fit. It is released once, after the child is reaped and its
+worker has joined, on success, nonzero exit, timeout, cancellation (including before the
+child exists), and launch failure. Commands without stdin, such as reads, deletes,
+searches, registry commands, and health or readiness probes, reserve nothing. Separate
+applications have independent budgets. Both input limits are independent of the transient
+process slots and the capture limits.
+
+A write refused by either input limit is never dispatched, so the fixed error says so and
+does not claim a mutation may have been applied; it carries no payload or size. Refusals are
+logged with the `resource_limit` category, without arguments or content. Counts cover
+stdin content only, not the request's other arguments, parsed objects, or allocator
+overhead. Unset or empty preserves existing behavior; boolean, fractional, malformed,
+zero, and negative values are rejected without exposing input.
+
 Environment variables are read at startup. An originless MCP client is accepted;
 browser clients must use an explicitly allowed origin. Avoid wildcard host or
 origin entries. HTTP limits concurrent connections to 100, uses a 5-second
@@ -374,7 +424,7 @@ responses; credentials are redacted from configuration errors.
 ## Docker
 
 The multi-stage image uses `python:3.15.2-slim`, installs locked production
-dependencies, and copies the Crystalline v0.32.0 binary from its official
+dependencies, and copies the Crystalline v0.32.1 binary from its official
 multi-architecture image pinned by digest. It runs HTTP and lazily supervised
 workspace Crystalline daemons as a non-root user. Copy `.env.example` to `.env`
 and set `MARABRAIN_BEARER_SECRET` to a generated secret as described above, then run:
@@ -413,7 +463,7 @@ activations reuse that workspace's cache. Model storage grows with persisted wor
 daemon memory grows with resident workspaces. The optional resident cap retires idle
 daemons without removing their data. Shutdown reaps owned daemons and preserves data. Health checks
 all resident engines within one total deadline, not embedding-model readiness or
-semantic-search quality. See the upstream [deployment guide](https://github.com/jordiboehme/crystalline/blob/v0.32.0/docs/deployment.md)
+semantic-search quality. See the upstream [deployment guide](https://github.com/jordiboehme/crystalline/blob/v0.32.1/docs/deployment.md)
 for offline model provisioning.
 
 ### Remote embeddings
@@ -478,6 +528,7 @@ settings are separate from embedding settings; an embedding model cannot generat
 | `LLM_TIMEOUT_SECONDS` | `60` | Provider request timeout in seconds |
 | `LLM_COMPRESSION_CACHE_MAX_ENTRIES` | unset (disabled) | Positive integer retained entry limit applied independently to every workspace and resolved domain pair; requires the byte limit |
 | `LLM_COMPRESSION_CACHE_MAX_BYTES` | unset (disabled) | Positive integer retained compressed UTF-8 payload limit applied independently to every workspace and resolved domain pair; requires the entry limit |
+| `LLM_COMPRESSION_CACHE_TOTAL_MAX_BYTES` | unset (disabled) | Optional strict positive integer ceiling on retained compressed UTF-8 payload across all workspaces and resolved domains in the application; requires the entry and byte limits |
 
 For OpenAI, for example, set `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4.1-mini`,
 and `LLM_PROVIDER_URL=https://api.openai.com/v1`, then supply your `LLM_API_KEY`.
@@ -515,7 +566,25 @@ and nonpositive, boolean, or fractional limits fail validation.
 Each workspace and domain pair evicts least recently used entries to satisfy both limits. `LLM_COMPRESSION_CACHE_MAX_BYTES`
 bounds only retained compressed UTF-8 payload, excluding cache keys, object
 overhead, and in-flight provider data. Oversized results are returned without being
-cached; failures and cancelled work are never cached. Cancelling one caller leaves
+cached; failures and cancelled work are never cached.
+
+Set `LLM_COMPRESSION_CACHE_TOTAL_MAX_BYTES`, for example to `16777216`, to cap the whole application
+as well. It requires the entry and byte limits, and a strict positive integer is parsed exactly
+like they are; empty or unset leaves the per-pair limits as the only bound. Retained compressed UTF-8 payload
+summed across every workspace and domain pair then never exceeds it: when a stored result would
+overflow, the application's least recently used entry is evicted, whichever pair holds it, until the total fits.
+A hit refreshes that recency, the per-pair limits still apply, and a result larger than the per-pair
+byte limit or the total is returned without being cached. A pair left with no entries is dropped from
+the cache.
+
+`edit_memory` and `delete_memory` purge the memory's cached text once their native command has been
+dispatched, whether it then succeeds, fails, or times out, because a failed or timed-out mutation may
+still have been applied. Every entry for that workspace, resolved domain, and permalink is dropped
+under any query. A compression already running for that memory still answers its callers but is
+not cached. Other permalinks, domains, and workspaces keep their entries. A request refused before
+dispatch, such as one for a denied or unresolved domain or rejected by process or domain capacity, purges nothing.
+Purging needs caching to be enabled. It removes derived text from this server's process memory only,
+not from the provider, its logs, or any caller's copy. Cancelling one caller leaves
 shared work available to remaining callers. When the last caller leaves or the
 server shuts down, owned work is cancelled and drained; cleanup can outlast the
 provider timeout and does not guarantee cancellation at the remote provider.
@@ -551,18 +620,24 @@ use `MARABRAIN_ENGINE_MODE=managed`, including the alternate preflight command, 
 local `external` setting does not reject a valid Docker cap. Invalid caps fail preflight;
 unset or empty caps preserve unbounded residency.
 
-`MARABRAIN_MAX_TRANSIENT_PROCESSES`, `MARABRAIN_MAX_CAPTURE_BYTES`, and
-`MARABRAIN_MAX_TOTAL_CAPTURE_BYTES` are also
+`MARABRAIN_MAX_TRANSIENT_PROCESSES`, `MARABRAIN_MAX_CAPTURE_BYTES`,
+`MARABRAIN_MAX_TOTAL_CAPTURE_BYTES`, `MARABRAIN_MAX_WORKSPACE_TRANSIENT_PROCESSES`, and
+`MARABRAIN_MAX_WORKSPACE_CAPTURE_BYTES` are also
 exported and forwarded identically to both containers, including sourced `.env`
 overrides. Both containers parse the same optional integer limits; empty or unset
 values disable them, and invalid values fail configuration preflight.
 
-`MARABRAIN_DOMAIN_COMMAND_CAPACITY`, `LLM_COMPRESSION_CACHE_MAX_ENTRIES`, and
-`LLM_COMPRESSION_CACHE_MAX_BYTES` are
+`MARABRAIN_MAX_INPUT_BYTES` and `MARABRAIN_MAX_TOTAL_INPUT_BYTES` are exported and
+forwarded identically to both containers, including sourced `.env` overrides; empty or
+unset values disable them, and invalid values fail configuration preflight.
+
+`MARABRAIN_DOMAIN_COMMAND_CAPACITY`, `LLM_COMPRESSION_CACHE_MAX_ENTRIES`,
+`LLM_COMPRESSION_CACHE_MAX_BYTES`, and `LLM_COMPRESSION_CACHE_TOTAL_MAX_BYTES` are
 exported and forwarded identically to configuration preflight and runtime,
 including sourced `.env` overrides. Unset or empty capacity disables domain quotas;
-both cache limits unset or empty disables caching. Invalid scalar values or an
-incomplete cache pair fail preflight before runtime starts.
+both cache limits unset or empty disables caching, and an unset or empty total leaves
+the per-pair limits as the only bound. Invalid scalar values, an
+incomplete cache pair, or a total without the pair fail preflight before runtime starts.
 
 When overriding `MARABRAIN_ALLOWED_HOSTS`, retain `127.0.0.1` alongside your
 public hostname so the container's internal healthcheck remains authorized.

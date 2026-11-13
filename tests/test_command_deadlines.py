@@ -252,3 +252,123 @@ async def test_read_releases_domain_before_waiting_for_compression(cli: Path, mo
                     assert len(calls(cli)) == 2
                 finally:
                     release.set()
+
+
+def child_is_reaped(pid: int) -> bool:
+    """Report whether a launched child has been fully reaped."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+@pytest.mark.parametrize("outcome", ["success", "exit", "malformed", "timeout"])
+async def test_on_dispatch_runs_once_after_the_child_is_reaped(cli: Path, outcome: str) -> None:
+    """Report dispatch exactly once, after reaping, whether the command succeeds, exits nonzero, prints garbage, or times out."""
+    respond(cli, "not json" if outcome == "malformed" else json.dumps(RECEIPT), exit_code=1 if outcome == "exit" else 0, hang=outcome == "timeout")
+    reaped: list[bool] = []
+
+    def dispatched() -> None:
+        """Record whether the launched child is already gone when the callback runs."""
+        [record] = calls(cli)
+        pid = record["pid"]
+        assert isinstance(pid, int)
+        reaped.append(child_is_reaped(pid))
+
+    command = run_json(["delete", "note", "notes", "--force"], timeout_seconds=0.5 if outcome == "timeout" else 5, on_dispatch=dispatched)
+    if outcome == "success":
+        assert await command == RECEIPT
+    else:
+        with pytest.raises(ToolError):
+            await command
+    assert reaped == [True]
+
+
+async def test_on_dispatch_runs_after_reaping_when_the_caller_is_cancelled(cli: Path) -> None:
+    """Report dispatch once, after the child is reaped, when cancellation interrupts a running command."""
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    port = listener.extra(SocketAttribute.local_port)
+    (cli / "crystalline").write_text(
+        f"#!{sys.executable}\nimport os, socket, time\ns = socket.create_connection(('127.0.0.1', {port}))\n"
+        "s.sendall(str(os.getpid()).encode())\ns.recv(1)\ntime.sleep(60)\n"
+    )
+    send, receive = anyio.create_memory_object_stream[int](1)
+    reaped: list[bool] = []
+    pid = 0
+
+    async def started(connection: SocketStream) -> None:
+        """Report the child PID and keep its connection open until cancellation."""
+        async with connection:
+            await send.send(int(await connection.receive()))
+            await anyio.sleep_forever()
+
+    def dispatched() -> None:
+        """Record whether the cancelled child is already gone when the callback runs."""
+        reaped.append(child_is_reaped(pid))
+
+    async def request() -> None:
+        """Run the command until its task group is cancelled."""
+        await run_json(["delete", "note", "notes", "--force"], on_dispatch=dispatched)
+
+    async with send, receive, listener:
+        with anyio.fail_after(15):
+            async with anyio.create_task_group() as group:
+                group.start_soon(listener.serve, started)
+                group.start_soon(request)
+                pid = await receive.receive()
+                group.cancel_scope.cancel()
+    assert reaped == [True]
+
+
+async def test_on_dispatch_never_runs_for_requests_refused_before_launch(cli: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Skip the callback for an expired deadline and for a missing executable, neither of which creates a child."""
+    fired: list[None] = []
+
+    def dispatched() -> None:
+        """Record any unexpected dispatch."""
+        fired.append(None)
+
+    with pytest.raises(ToolError, match="may or may not have been applied"):
+        await run_json(["delete", "note", "notes", "--force"], deadline=anyio.current_time() - 1, on_dispatch=dispatched)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(ToolError, match="unavailable"):
+        await run_json(["delete", "note", "notes", "--force"], on_dispatch=dispatched)
+    assert fired == [] and calls(cli) == []
+
+
+async def test_on_dispatch_never_runs_for_a_process_slot_refusal(cli: Path) -> None:
+    """Skip the callback for a command refused by transient process capacity while the running command still reports dispatch."""
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    port = listener.extra(SocketAttribute.local_port)
+    (cli / "crystalline").write_text(
+        f"#!{sys.executable}\nimport socket\ns = socket.create_connection(('127.0.0.1', {port}))\ns.sendall(b'1')\ns.recv(1)\nprint('{{}}')\n"
+    )
+    context = EngineContext.capture(max_transient_processes=2)
+    arrived, release = anyio.Event(), anyio.Event()
+    occupant: list[str] = []
+    refused: list[str] = []
+
+    async def hold(connection: SocketStream) -> None:
+        """Keep the only data slot occupied until the test releases the child."""
+        async with connection:
+            await connection.receive()
+            arrived.set()
+            await release.wait()
+            await connection.send(b"x")
+
+    async def running() -> None:
+        """Complete one command that owns the data slot."""
+        assert await run_json(["read"], context=context, on_dispatch=lambda: occupant.append("dispatched")) == {}
+
+    with anyio.fail_after(10):
+        async with listener, anyio.create_task_group() as server:
+            server.start_soon(listener.serve, hold)
+            async with anyio.create_task_group() as commands:
+                commands.start_soon(running)
+                await arrived.wait()
+                with pytest.raises(ToolError, match="capacity is exhausted"):
+                    await run_json(["delete"], context=context, on_dispatch=lambda: refused.append("dispatched"))
+                release.set()
+            server.cancel_scope.cancel()
+    assert occupant == ["dispatched"] and refused == []

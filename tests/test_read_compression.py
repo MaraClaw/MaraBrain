@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 import anyio
 from fastmcp import Client
+from fastmcp.client.transports import FastMCPTransport
 from fastmcp.exceptions import ToolError
-from memory_fake import WORKSPACE_ACTIVATION, WORKSPACE_ID, calls, respond, workspace_registry
+from memory_fake import RECEIPT, WORKSPACE_ACTIVATION, WORKSPACE_ID, calls, respond, workspace_registry
 from pydantic import SecretStr, TypeAdapter
 from starlette.testclient import TestClient
 from test_compression import Provider, provider as provider
@@ -259,3 +260,149 @@ async def test_cache_provider_failure_recovers_without_fallback(cli: Path, provi
         assert (await client.call_tool("read_memory", arguments)).structured_content == {**MEMORY, "content": "result", "compressed": True}
         await client.call_tool("read_memory", arguments)
     assert len(provider.requests) == 2
+
+
+MUTATIONS: dict[str, dict[str, object]] = {"edit_memory": {"operation": {"type": "append", "content": "more"}}, "delete_memory": {}}
+MUTATION_ARGV = {"edit_memory": ["--json", "edit", "team/plan", "notes", "append"], "delete_memory": ["--json", "delete", "team/plan", "notes", "--force"]}
+
+
+def enable_cache(monkeypatch: pytest.MonkeyPatch, total: int | None = None) -> None:
+    """Enable the compression cache with generous per-pair limits and an optional application-wide ceiling."""
+    monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_ENTRIES", "4")
+    monkeypatch.setenv("LLM_COMPRESSION_CACHE_MAX_BYTES", "1024")
+    if total is not None:
+        monkeypatch.setenv("LLM_COMPRESSION_CACHE_TOTAL_MAX_BYTES", str(total))
+
+
+async def compressed_read(
+    client: Client[FastMCPTransport], cli: Path, workspace_id: str = WORKSPACE_ID, domain: str = "notes", permalink: str = "team/plan", query: str = "retry"
+) -> None:
+    """Read one memory compressed after pointing the fake engine at its native document."""
+    source = {**MEMORY, "domain": domain, "permalink": permalink}
+    respond(cli, json.dumps(source))
+    result = await client.call_tool("read_memory", {"workspace_id": workspace_id, "domain": domain, "permalink": permalink, "query": query, "compress": True})
+    assert result.structured_content == {**source, "content": "result", "compressed": True}
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "timeout"])
+@pytest.mark.parametrize("tool", list(MUTATIONS))
+async def test_dispatched_mutation_purges_cached_compression(cli: Path, provider: Provider, monkeypatch: pytest.MonkeyPatch, tool: str, outcome: str) -> None:
+    """Drop the memory's cached text once its edit or delete launches, whether the command succeeds, exits nonzero, or times out."""
+    configure(monkeypatch, provider)
+    enable_cache(monkeypatch)
+    async with Client(create_server(Settings(command_timeout_seconds=1.0))) as client:
+        await compressed_read(client, cli)
+        await compressed_read(client, cli)
+        assert len(provider.requests) == 1
+        respond(cli, json.dumps(RECEIPT), exit_code=1 if outcome == "failure" else 0, hang=outcome == "timeout")
+        if outcome == "success":
+            await client.call_tool(tool, {**TARGET, **MUTATIONS[tool]})
+        else:
+            with pytest.raises(ToolError, match="exit code 1" if outcome == "failure" else "may or may not have been applied"):
+                await client.call_tool(tool, {**TARGET, **MUTATIONS[tool]})
+        assert calls(cli)[-1]["argv"] == MUTATION_ARGV[tool]
+        await compressed_read(client, cli)
+        assert len(provider.requests) == 2
+        await compressed_read(client, cli)
+        assert len(provider.requests) == 2
+
+
+async def test_purge_spares_other_permalinks_domains_and_workspaces(cli: Path, provider: Provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave cached text for every other permalink, resolved domain, and workspace after one memory is deleted."""
+    configure(monkeypatch, provider)
+    enable_cache(monkeypatch)
+    (cli / "domains.json").write_text(json.dumps([{"name": "notes"}, {"name": "other"}]))
+    await workspace_registry().synchronize()
+    memories = [
+        (WORKSPACE_ID, "notes", "team/plan"),
+        (WORKSPACE_ID, "notes", "team/other"),
+        (WORKSPACE_ID, "other", "team/plan"),
+        ("second-workspace", "notes", "team/plan"),
+    ]
+    async with Client(create_server(Settings())) as client:
+        for memory in memories:
+            await compressed_read(client, cli, *memory)
+        assert len(provider.requests) == 4
+        respond(cli)
+        await client.call_tool("delete_memory", TARGET)
+        for memory in memories[1:]:
+            await compressed_read(client, cli, *memory)
+        assert len(provider.requests) == 4
+        await compressed_read(client, cli, *memories[0])
+        assert len(provider.requests) == 5
+
+
+async def test_mutation_refused_before_dispatch_purges_nothing(cli: Path, provider: Provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the cached text when a denied domain spelling that resolves to the same memory is refused before any command."""
+    configure(monkeypatch, provider)
+    enable_cache(monkeypatch)
+    async with Client(create_server(Settings(allowed_domains=("notes",)))) as client:
+        await compressed_read(client, cli)
+        for tool, extra in MUTATIONS.items():
+            with pytest.raises(ToolError, match="not permitted"):
+                await client.call_tool(tool, {**TARGET, "domain": "NOTES", **extra})
+        await compressed_read(client, cli)
+    assert len(provider.requests) == 1
+    read = ["--json", "read", "team/plan", "--domain=notes"]
+    assert [record["argv"] for record in calls(cli)] == [*WORKSPACE_ACTIVATION, read, read]
+
+
+async def test_mutation_during_a_running_compression_answers_the_caller_without_caching(cli: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Return an in-flight compression to its caller after an edit purges the memory, but cache nothing so the next read recomputes."""
+    entered, release = anyio.Event(), anyio.Event()
+    queries: list[str] = []
+
+    async def compress(settings: LLMSettings, query: str, content: str) -> str:
+        """Hold each provider call at an explicit barrier."""
+        queries.append(query)
+        entered.set()
+        await release.wait()
+        return "compressed body"
+
+    monkeypatch.setenv("LLM_MODEL", "generation-model")
+    monkeypatch.setenv("LLM_PROVIDER_URL", "https://provider.test/v1")
+    enable_cache(monkeypatch)
+    monkeypatch.setattr("marabrain.memory_tools.compress_memory", compress)
+    respond(cli, json.dumps(MEMORY))
+    arguments = {**TARGET, "query": "retry", "compress": True}
+    results: list[JsonObject | None] = []
+    async with Client(create_server(Settings())) as client:
+
+        async def read() -> None:
+            """Record the response of the compression that straddles the edit."""
+            results.append((await client.call_tool("read_memory", arguments)).structured_content)
+
+        with anyio.fail_after(10):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(read)
+                await entered.wait()
+                await anyio.wait_all_tasks_blocked()
+                respond(cli)
+                await client.call_tool("edit_memory", {**TARGET, **MUTATIONS["edit_memory"]})
+                release.set()
+            assert results == [{**MEMORY, "content": "compressed body", "compressed": True}]
+            respond(cli, json.dumps(MEMORY))
+            await client.call_tool("read_memory", arguments)
+            await client.call_tool("read_memory", arguments)
+    assert queries == ["retry", "retry"]
+
+
+async def test_total_ceiling_spans_workspaces_and_hits_refresh_recency(cli: Path, provider: Provider, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hold the application to its byte ceiling across workspaces, evicting the least recently used entry first."""
+    configure(monkeypatch, provider)
+    enable_cache(monkeypatch, total=12)
+    sequence = [
+        (WORKSPACE_ID, "x"),
+        ("second-workspace", "x"),
+        (WORKSPACE_ID, "x"),
+        (WORKSPACE_ID, "y"),
+        ("second-workspace", "x"),
+        (WORKSPACE_ID, "y"),
+        (WORKSPACE_ID, "x"),
+    ]
+    counts: list[int] = []
+    async with Client(create_server(Settings())) as client:
+        for workspace, query in sequence:
+            await compressed_read(client, cli, workspace, query=query)
+            counts.append(len(provider.requests))
+    assert counts == [1, 2, 2, 3, 4, 4, 5]

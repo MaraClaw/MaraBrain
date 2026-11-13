@@ -4,7 +4,7 @@ import logging
 import subprocess
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future
 
 import anyio
@@ -22,10 +22,16 @@ _LOGGER = logging.getLogger(__name__)
 _OPERATIONS = frozenset({"write", "read", "edit", "delete", "search"})
 
 
-async def _run_command(arguments: Sequence[str], data: bytes, context: EngineContext, deadline: float) -> subprocess.CompletedProcess[StdoutCapture]:
-    """Retain ownership through launch cancellation and reap the CLI before returning."""
+async def _run_command(
+    arguments: Sequence[str], data: bytes, context: EngineContext, deadline: float, *, on_dispatch: Callable[[], None] | None = None
+) -> subprocess.CompletedProcess[StdoutCapture]:
+    """Retain ownership through launch cancellation and reap the CLI before returning.
+
+    When a child process was created, `on_dispatch` runs once on the event loop after the
+    worker has been joined, including after failure, timeout, or cancellation.
+    """
     result = Future[subprocess.CompletedProcess[StdoutCapture]]()
-    capture = StdoutCapture(context.transients.max_capture_bytes, context.transients.capture_budget)
+    capture = StdoutCapture(context.data_transients.max_capture_bytes, context.data_transients.capture_budget)
     delivered = False
     cancelled = threading.Event()
     finished = anyio.Event()
@@ -69,7 +75,9 @@ async def _run_command(arguments: Sequence[str], data: bytes, context: EngineCon
     try:
         await anyio.lowlevel.checkpoint()
         check_deadline(deadline)
-        with context.transients.admit():
+        # Admit first, then reserve stdin: a refusal of either releases the other, and the budget is touched only when a child will launch.
+        # Both holds end after the worker joins, including cancellation before the child exists and launch failure.
+        with context.data_transients.admit(), context.transients.reserve_input(len(data)):
             worker = threading.Thread(target=execute, name="marabrain-cli")
             worker.start()
             try:
@@ -83,6 +91,8 @@ async def _run_command(arguments: Sequence[str], data: bytes, context: EngineCon
                         process.poll()
                 with anyio.CancelScope(shield=True):
                     await anyio.to_thread.run_sync(worker.join)
+                if process is not None and on_dispatch is not None:
+                    on_dispatch()
             await anyio.lowlevel.checkpoint()
             completed = result.result()
             delivered = True
@@ -93,12 +103,20 @@ async def _run_command(arguments: Sequence[str], data: bytes, context: EngineCon
 
 
 async def run_json(
-    arguments: Sequence[str], content: str | None = None, timeout_seconds: float = 30.0, *, context: EngineContext | None = None, deadline: float | None = None
+    arguments: Sequence[str],
+    content: str | None = None,
+    timeout_seconds: float = 30.0,
+    *,
+    context: EngineContext | None = None,
+    deadline: float | None = None,
+    on_dispatch: Callable[[], None] | None = None,
 ) -> JsonObject:
     """Run `crystalline --json` once and return its stdout JSON object unchanged.
 
     Content is sent on stdin, stderr is discarded, and failures raise fixed messages.
     A timeout or crash during a mutation does not promise that nothing was applied.
+    The synchronous `on_dispatch` callback runs once if a child process was created,
+    whatever the outcome, and never for a request refused before launch.
     """
     operation = arguments[0] if arguments and arguments[0] in _OPERATIONS else "unknown"
     started = time.monotonic()
@@ -111,7 +129,7 @@ async def run_json(
         limit = cap if deadline is None else min(cap, deadline)
         with anyio.fail_after(limit - anyio.current_time()):
             check_deadline(limit)
-            result = await _run_command(arguments, data, captured, limit)
+            result = await _run_command(arguments, data, captured, limit, on_dispatch=on_dispatch)
             with result.stdout as raw:
                 check_deadline(limit)
                 if result.returncode != 0:

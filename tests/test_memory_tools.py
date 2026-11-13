@@ -1,7 +1,9 @@
 """Behavior tests for the Crystalline-backed memory tools at the subprocess and MCP boundaries."""
 
 import json
+import logging
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -10,11 +12,14 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from memory_fake import NOISE, RECEIPT, WORKSPACE_ACTIVATION, WORKSPACE_ID, call, calls, respond
+from residency_support import assert_reaped, context_for, resident_cli as resident_cli
 from starlette.testclient import TestClient
+from test_workspaces import records
 
 from marabrain import crystalline
-from marabrain.config import Settings
+from marabrain.config import EngineMode, Settings
 from marabrain.server import create_server
+from marabrain.transient import InputSizeError
 
 
 def edit(operation: dict[str, object], **extra: object) -> dict[str, object]:
@@ -279,3 +284,103 @@ def test_http_requires_authentication_before_any_memory_command(cli: Path, monke
     assert response.json()["result"]["structuredContent"] == RECEIPT
     expected = [*WORKSPACE_ACTIVATION, ["--json", "delete", "team/plan", "notes", "--force"]]
     assert [(record["argv"], record["stdin"]) for record in calls(cli)] == [(command, "") for command in expected]
+
+
+LIMIT = 8
+KINDS = ["create", "append", "prepend", "find_replace", "replace_section", "insert_before_section", "insert_after_section"]
+SECTION_FIELDS: dict[str, dict[str, object]] = {
+    "find_replace": {"find_text": "findme-findme-findme"},
+    "replace_section": {"section": "Plan"},
+    "insert_before_section": {"section": "Plan"},
+    "insert_after_section": {"section": "Plan"},
+}
+
+
+def write_call(kind: str, content: str) -> tuple[str, dict[str, object]]:
+    """Build a create_memory or edit_memory call of the given kind carrying the given content."""
+    if kind == "create":
+        return "create_memory", {**NOTE, "content": content}
+    return "edit_memory", edit({"type": kind, "content": content, **SECTION_FIELDS.get(kind, {})})
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize(
+    "content,accepted",
+    [
+        pytest.param("a" * LIMIT, True, id="ascii-exact"),
+        pytest.param("a" * (LIMIT + 1), False, id="ascii-over"),
+        pytest.param("\u00fc" * 4, True, id="two-byte-exact"),
+        pytest.param("\u00fc" * 4 + "a", False, id="two-byte-over"),
+        pytest.param("\u20ac\u20ac\u00fc", True, id="mixed-exact"),
+        pytest.param("\u20ac\u20ac\u00fc" + "a", False, id="mixed-over"),
+        pytest.param("\U0001f600" * 2, True, id="four-byte-exact"),
+        pytest.param("\U0001f600" * 2 + "a", False, id="four-byte-over"),
+    ],
+)
+async def test_input_ceiling_counts_utf8_bytes_for_create_and_every_edit(cli: Path, kind: str, content: str, accepted: bool) -> None:
+    """Pass exactly the configured byte count and refuse one more byte before any command runs."""
+    tool, arguments = write_call(kind, content)
+    async with Client(create_server(Settings(max_input_bytes=LIMIT))) as client:
+        if accepted:
+            assert (await client.call_tool(tool, arguments)).structured_content == RECEIPT
+            assert calls(cli)[-1]["stdin"] == content
+        else:
+            with pytest.raises(ToolError) as refused:
+                await client.call_tool(tool, arguments)
+            message = str(refused.value)
+            assert content not in message and "may or may not" not in message and "mutation" not in message
+            assert not any(character.isdigit() for character in message)
+            assert calls(cli) == []
+
+
+async def test_unset_input_ceiling_preserves_unbounded_writes(cli: Path) -> None:
+    """Send a large write unchanged when no per-command ceiling is configured."""
+    content = "x" * 200000
+    assert await call("create_memory", {**NOTE, "content": content}) == RECEIPT
+    assert calls(cli)[-1]["stdin"] == content
+
+
+@pytest.mark.parametrize(
+    "tool,arguments",
+    [
+        pytest.param("read_memory", {**TARGET, "permalink": "long/" + "p" * 64}, id="read"),
+        pytest.param("delete_memory", {**TARGET, "permalink": "long/" + "p" * 64}, id="delete"),
+        pytest.param("search_memories", {"workspace_id": WORKSPACE_ID, "domains": ["notes"], "query": "q" * 64}, id="search"),
+        pytest.param("create_memory", {**NOTE, "content": ""}, id="create-empty"),
+    ],
+)
+async def test_input_limits_apply_only_to_write_content(cli: Path, tool: str, arguments: dict[str, object]) -> None:
+    """Run commands without stdin content beside the tightest possible input limits."""
+    async with Client(create_server(Settings(max_input_bytes=1, max_total_input_bytes=1))) as client:
+        assert (await client.call_tool(tool, arguments)).structured_content == RECEIPT
+    assert calls(cli)[-1]["stdin"] == ""
+
+
+@pytest.mark.parametrize("kind,operation", [("create", "write"), ("append", "edit")])
+async def test_input_ceiling_refusal_logs_resource_limit_without_content(cli: Path, caplog: pytest.LogCaptureFixture, kind: str, operation: str) -> None:
+    """Record the refusal under the resource_limit category without arguments or content."""
+    caplog.set_level(logging.DEBUG, logger="marabrain.memory_tools")
+    tool, arguments = write_call(kind, "private-content")
+    with pytest.raises(ToolError):
+        async with Client(create_server(Settings(max_input_bytes=4))) as client:
+            await client.call_tool(tool, {**arguments, "domain": "private-domain"})
+    assert f"operation={operation} category=resource_limit elapsed_ms=" in caplog.text
+    assert "private-content" not in caplog.text and "private-domain" not in caplog.text and "A title" not in caplog.text
+    assert calls(cli) == []
+
+
+async def test_refused_write_activates_no_workspace_and_retires_no_runtime(resident_cli: tuple[Path, Path]) -> None:
+    """Refuse an oversized write before leasing so it cannot activate its workspace or retire an idle tenant."""
+    root, events = resident_cli
+    settings = Settings(engine_mode=EngineMode.MANAGED, max_resident_workspaces=1, max_input_bytes=LIMIT)
+    async with Client(create_server(settings)) as client:
+        await client.call_tool("create_memory", {"workspace_id": "alpha", "domain": "notes", "title": "note", "content": "body"})
+        pid = int((context_for("alpha", root).state_home / "owner").read_text())
+        launched = len(records(events))
+        for tool, arguments in (write_call("create", "x" * (LIMIT + 1)), write_call("append", "x" * (LIMIT + 1))):
+            with pytest.raises(ToolError, match=re.escape(str(InputSizeError()))):
+                await client.call_tool(tool, {**arguments, "workspace_id": "beta"})
+        assert len(records(events)) == launched
+        os.kill(pid, 0)
+        await client.call_tool("create_memory", {"workspace_id": "beta", "domain": "notes", "title": "note", "content": "body"})
+        assert_reaped(pid)

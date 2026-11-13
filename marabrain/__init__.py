@@ -2,4 +2,4 @@
 
 from typing import Final
 
-__version__: Final = "0.4.6"
+__version__: Final = "0.4.7"

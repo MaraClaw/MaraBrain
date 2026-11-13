@@ -10,7 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from marabrain.config import Settings
-from marabrain.transient import TransientRuntime
+from marabrain.transient import TransientRuntime, WorkspaceTransients
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,16 +21,30 @@ class EngineContext:
     state_home: Path
     config_identity: str
     transients: TransientRuntime = field(default_factory=TransientRuntime, repr=False, compare=False)
+    workspace_transients: WorkspaceTransients | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def for_application(cls, settings: Settings) -> EngineContext:
         """Bind programmatic limits to one entry-time environment capture."""
         return replace(
-            cls.capture(), transients=TransientRuntime(settings.max_transient_processes, settings.max_capture_bytes, settings.max_total_capture_bytes)
+            cls.capture(),
+            transients=TransientRuntime(
+                settings.max_transient_processes,
+                settings.max_capture_bytes,
+                settings.max_total_capture_bytes,
+                max_workspace_transient_processes=settings.max_workspace_transient_processes,
+                max_workspace_capture_bytes=settings.max_workspace_capture_bytes,
+                max_total_input_bytes=settings.max_total_input_bytes,
+            ),
         )
 
+    @property
+    def data_transients(self) -> TransientRuntime | WorkspaceTransients:
+        """Return the workspace share for memory and registry commands, else the application runtime."""
+        return self.transients if self.workspace_transients is None else self.workspace_transients
+
     def for_workspace(self, workspace_id: str, root: Path) -> EngineContext:
-        """Derive private workspace selectors while retaining application-wide transient quotas."""
+        """Derive private workspace selectors and share while retaining application-wide transient quotas."""
         from marabrain.workspace_storage import workspace_path
 
         private = workspace_path(workspace_id, root)
@@ -48,7 +62,7 @@ class EngineContext:
         environment.update({name: str(path) for name, path in selectors.items()})
         identity = {"workspace_id": workspace_id, **{name: str(path) for name, path in selectors.items()}}
         fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        return EngineContext(environment, selectors["XDG_STATE_HOME"], fingerprint, self.transients)
+        return EngineContext(environment, selectors["XDG_STATE_HOME"], fingerprint, self.transients, self.transients.for_workspace(workspace_id))
 
     def __post_init__(self) -> None:
         """Detach caller-owned mappings and expose only an immutable environment snapshot."""
@@ -56,7 +70,14 @@ class EngineContext:
 
     @classmethod
     def capture(
-        cls, *, max_transient_processes: int | None = None, max_capture_bytes: int | None = None, max_total_capture_bytes: int | None = None
+        cls,
+        *,
+        max_transient_processes: int | None = None,
+        max_capture_bytes: int | None = None,
+        max_total_capture_bytes: int | None = None,
+        max_workspace_transient_processes: int | None = None,
+        max_workspace_capture_bytes: int | None = None,
+        max_total_input_bytes: int | None = None,
     ) -> EngineContext:
         """Snapshot the environment and pin filesystem defaults before ambient state changes."""
         environment = dict(os.environ)
@@ -78,6 +99,12 @@ class EngineContext:
             environment["CRYSTALLINE_CONFIG"] = str(Path(selected).absolute())
         identity = {name: value for name, value in environment.items() if name in ("HOME", "XDG_RUNTIME_DIR", *defaults) or name.startswith("CRYSTALLINE_")}
         fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        return cls(
-            environment, Path(environment["XDG_STATE_HOME"]), fingerprint, TransientRuntime(max_transient_processes, max_capture_bytes, max_total_capture_bytes)
+        transients = TransientRuntime(
+            max_transient_processes,
+            max_capture_bytes,
+            max_total_capture_bytes,
+            max_workspace_transient_processes=max_workspace_transient_processes,
+            max_workspace_capture_bytes=max_workspace_capture_bytes,
+            max_total_input_bytes=max_total_input_bytes,
         )
+        return cls(environment, Path(environment["XDG_STATE_HOME"]), fingerprint, transients)
