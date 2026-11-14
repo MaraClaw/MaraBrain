@@ -7,11 +7,8 @@ from pathlib import Path
 
 import anyio
 import pytest
-import yaml
 from anyio.streams.buffered import BufferedByteReceiveStream
 from memory_fake import WORKSPACE_ID, workspace_context
-from test_embeddings import Provider, configure
-from test_embeddings import provider as provider
 from test_engine_lifecycle import application, assert_reaped, health
 from test_engine_lifecycle import runtime as runtime
 from test_startup_deadlines import BUDGET_ENGINE
@@ -26,15 +23,13 @@ from marabrain.server import main
 capture = EngineContext.capture
 root = Path(os.environ["ENGINE_TEST_ROOT"])
 def capture_then_change():
-    """Record each capture and poison later ambient engine and embedding settings."""
+    """Record each capture and poison later ambient engine settings."""
     context = capture()
     with (root / "captures").open("a") as stream:
         stream.write("captured\\n")
     os.environ["ENGINE_TEST_ROOT"] = str(root / "wrong-engine")
     for name in ("HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME"):
         os.environ[name] = str(root / ("wrong-" + name))
-    os.environ["EMBEDDING_MODEL"] = "wrong-model"
-    os.environ["EMBEDDING_API_KEY"] = "wrong-secret"
     return context
 EngineContext.capture = staticmethod(capture_then_change)
 main()
@@ -42,15 +37,9 @@ main()
 
 
 @pytest.mark.asyncio
-async def test_application_uses_entry_context_and_limits_credential_overlay_to_daemon(
-    runtime: Path, provider: Provider, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Keep initialization, daemon, synchronization, health and memory on one captured context."""
+async def test_application_uses_entry_context_for_every_engine_process(runtime: Path) -> None:
+    """Keep the daemon, synchronization, health and memory on one captured context."""
     (runtime / "crystalline").write_text(f"#!{sys.executable}\n" + BUDGET_ENGINE)
-    key = runtime / "provider-key"
-    key.write_text("bound-secret\n")
-    configure(monkeypatch, provider, EMBEDDING_API_KEY="", EMBEDDING_API_KEY_FILE=str(key))
-    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     ambient = dict(os.environ)
     context = workspace_context()
     async with application(runtime, command=[sys.executable, "-c", CAPTURE_THEN_CHANGE]) as process:
@@ -70,19 +59,14 @@ async def test_application_uses_entry_context_and_limits_credential_overlay_to_d
         )
         with anyio.fail_after(5):
             result = json.loads(await reader.receive_until(b"\n", 100000))
-        assert result["result"]["structuredContent"] == {"store": str(context.state_home), "key": ""}
+        assert result["result"]["structuredContent"] == {"store": str(context.state_home)}
         await process.stdin.aclose()
         with anyio.fail_after(5):
             assert await process.wait() == 0
-    config = Path(context.environment["XDG_CONFIG_HOME"]) / "crystalline/config.yaml"
-    assert yaml.safe_load(config.read_text())["embeddings"]["model"] == "test-model"
-    assert "bound-secret" not in config.read_text()
-    assert [request.authorization for request in provider.requests] == ["Bearer bound-secret"]
+    assert not (Path(context.environment["XDG_CONFIG_HOME"]) / "crystalline/config.yaml").exists()
     events = [json.loads(line) for line in (runtime / "events").read_text().splitlines()]
-    assert [event["key"] for event in events if event["args"] == ["serve", "--http", "off"]] == ["bound-secret"]
-    assert all(event["key"] == "" for event in events if event["args"] != ["serve", "--http", "off"])
+    assert ["serve", "--http", "off"] in [event["args"] for event in events]
     assert all(event["state"] == str(context.state_home) and event["config"] == context.environment["XDG_CONFIG_HOME"] for event in events)
     assert (runtime / "captures").read_text().splitlines() == ["captured"]
     assert dict(os.environ) == ambient
-    assert b"bound-secret" not in (runtime / "application-stderr").read_bytes()
     assert_reaped(runtime)

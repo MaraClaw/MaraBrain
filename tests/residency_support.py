@@ -76,7 +76,7 @@ class ChildGate:
 def resident_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workspace_root: Path) -> Iterator[tuple[Path, Path]]:
     """Install a per-workspace managed child while keeping files in a private short root."""
     for name in tuple(os.environ):
-        if name.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_", "CRYSTALLINE_")):
+        if name.startswith(("MARABRAIN_", "LLM_", "CRYSTALLINE_")):
             monkeypatch.delenv(name)
     monkeypatch.setenv("MARABRAIN_WORKSPACE_ROOT", str(workspace_root))
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")

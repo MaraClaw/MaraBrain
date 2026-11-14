@@ -67,7 +67,6 @@ except BlockingIOError:
 if os.environ.get("DIE_STARTUP"):
     sys.exit(4)
 (root / "owner").write_text(f"{pid} {time.monotonic()}")
-(root / "environment-key").write_text(os.environ.get("EMBEDDING_API_KEY", ""))
 if os.environ.get("IGNORE_TERM"):
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
 print("engine-noise", flush=True)
@@ -81,7 +80,7 @@ while True:
 def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workspace_root: Path) -> Iterator[Path]:
     """Isolate state and fake children, retaining persisted data across application runs."""
     for name in tuple(os.environ):
-        if name.startswith(("MARABRAIN_", "EMBEDDING_")):
+        if name.startswith("MARABRAIN_"):
             monkeypatch.delenv(name)
     monkeypatch.setenv("MARABRAIN_WORKSPACE_ROOT", str(workspace_root))
     executable = tmp_path / "crystalline"
@@ -280,54 +279,34 @@ async def test_eof_during_readiness_reaps_owned_daemon(runtime: Path, monkeypatc
 @pytest.mark.parametrize("mode", ["managed", "external"])
 @pytest.mark.asyncio
 async def test_existing_daemon_is_preserved_before_configuration(runtime: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
-    """Verify managed refusal and external serving both preserve a preexisting daemon and skip initialization."""
-    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
-    port = listener.extra(anyio.abc.SocketAttribute.local_address)[1]
-    initialized = anyio.Event()
+    """Verify managed refusal and external serving both preserve a preexisting daemon and its configuration."""
     context = workspace_context()
     config = Path(context.environment["XDG_CONFIG_HOME"]) / "crystalline/config.yaml"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("domains: []\n")
-
-    async def record_initialization(stream: anyio.abc.SocketStream) -> None:
-        """Record any forbidden provider probe while allowing it to finish successfully."""
-        async with stream:
-            await stream.receive()
-            initialized.set()
-            body = b'{"data":[{"index":0,"embedding":[0.1,0.2,0.3]}]}'
-            await stream.send(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
-
-    async with listener, anyio.create_task_group() as tasks:
-        tasks.start_soon(listener.serve, record_initialization)
-        async with await anyio.open_process(
-            ["crystalline", "serve", "--http", "off"], env=dict(context.environment), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        ) as external:
-            try:
-                await await_file(runtime / "owner")
-                monkeypatch.setenv("EMBEDDING_MODEL", "existing-daemon-probe")
-                monkeypatch.setenv("EMBEDDING_PROVIDER_URL", f"http://127.0.0.1:{port}")
-                monkeypatch.setenv("EMBEDDING_DIMS", "3")
-                monkeypatch.setenv("NO_PROXY", "127.0.0.1")
-                monkeypatch.setenv("MARABRAIN_ENGINE_MODE", mode)
-                async with application(runtime) as process:
-                    if mode == "external":
-                        await health(process)
-                        assert process.stdin is not None
-                        await process.stdin.aclose()
-                        with anyio.fail_after(5):
-                            assert await process.wait() == 0
-                    else:
-                        reader = await begin_workspace(process)
-                        await activation_failed(process, reader)
-                assert external.returncode is None
-                assert (runtime / "checked-app").exists()
-                assert len(list(runtime.glob("launched-*"))) == 1
-                assert not initialized.is_set()
-                assert config.read_text() == "domains: []\n"
-            finally:
-                external.terminate()
-                await external.wait()
-        tasks.cancel_scope.cancel()
+    async with await anyio.open_process(
+        ["crystalline", "serve", "--http", "off"], env=dict(context.environment), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    ) as external:
+        try:
+            await await_file(runtime / "owner")
+            monkeypatch.setenv("MARABRAIN_ENGINE_MODE", mode)
+            async with application(runtime) as process:
+                if mode == "external":
+                    await health(process)
+                    assert process.stdin is not None
+                    await process.stdin.aclose()
+                    with anyio.fail_after(5):
+                        assert await process.wait() == 0
+                else:
+                    reader = await begin_workspace(process)
+                    await activation_failed(process, reader)
+            assert external.returncode is None
+            assert (runtime / "checked-app").exists()
+            assert len(list(runtime.glob("launched-*"))) == 1
+            assert config.read_text() == "domains: []\n"
+        finally:
+            external.terminate()
+            await external.wait()
     assert_reaped(runtime)
 
 
@@ -349,91 +328,6 @@ async def test_competing_start_never_adopts_the_lock_holder(runtime: Path, monke
         await winner.stdin.aclose()
         with anyio.fail_after(5):
             assert await winner.wait() == 0
-    assert_reaped(runtime)
-
-
-@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT, None])
-@pytest.mark.asyncio
-async def test_signal_interrupts_blocking_embedding_initialization(runtime: Path, monkeypatch: pytest.MonkeyPatch, signum: signal.Signals | None) -> None:
-    """Verify signals and EOF cancel an in-flight provider probe before engine launch or config writes."""
-    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
-    port = listener.extra(anyio.abc.SocketAttribute.local_address)[1]
-    received = anyio.Event()
-
-    async def hold_request(stream: anyio.abc.SocketStream) -> None:
-        """Hold the provider request open until application shutdown has been observed."""
-        async with stream:
-            await stream.receive()
-            received.set()
-            await anyio.sleep_forever()
-
-    monkeypatch.setenv("EMBEDDING_MODEL", "probe-test")
-    monkeypatch.setenv("EMBEDDING_DIMS", "3")
-    monkeypatch.setenv("EMBEDDING_PROVIDER_URL", f"http://127.0.0.1:{port}")
-    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
-    config = Path(workspace_context().environment["XDG_CONFIG_HOME"]) / "crystalline/config.yaml"
-    config.parent.mkdir(parents=True)
-    config.write_text("domains: []\n")
-    async with listener, anyio.create_task_group() as tasks:
-        tasks.start_soon(listener.serve, hold_request)
-        async with application(runtime) as process:
-            await begin_workspace(process)
-            with anyio.fail_after(10):
-                await received.wait()
-            listing = await anyio.run_process(["ps", "-A", "-o", "pid=,ppid="])
-            children = [int(pid) for pid, parent in (line.split() for line in listing.stdout.decode().splitlines()) if int(parent) == process.pid]
-            assert len(children) == 1
-            if signum is None:
-                assert process.stdin is not None
-                await process.stdin.aclose()
-            else:
-                process.send_signal(signum)
-            with anyio.fail_after(5):
-                await process.wait()
-            with pytest.raises(ProcessLookupError):
-                os.kill(children[0], 0)
-        tasks.cancel_scope.cancel()
-    assert not list(runtime.glob("launched-*"))
-    assert config.read_text() == "domains: []\n"
-    assert_reaped(runtime)
-
-
-@pytest.mark.asyncio
-async def test_initialized_secret_overlay_reaches_owned_daemon(runtime: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify successful initialization forwards a resolved file credential without persisting its value."""
-    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
-    port = listener.extra(anyio.abc.SocketAttribute.local_address)[1]
-
-    async def respond_to_probe(stream: anyio.abc.SocketStream) -> None:
-        """Answer the initializer's real provider request with the configured vector dimensions."""
-        async with stream:
-            request = bytearray()
-            while b"\r\n\r\n" not in request:
-                request += await stream.receive()
-            assert b"authorization: bearer lifecycle-secret" in bytes(request).lower()
-            body = b'{"data":[{"index":0,"embedding":[0.1,0.2,0.3]}]}'
-            await stream.send(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
-
-    key_file = runtime / "api-key"
-    key_file.write_text("lifecycle-secret\n")
-    monkeypatch.setenv("EMBEDDING_API_KEY_FILE", str(key_file))
-    monkeypatch.setenv("EMBEDDING_MODEL", "probe-test")
-    monkeypatch.setenv("EMBEDDING_DIMS", "3")
-    monkeypatch.setenv("EMBEDDING_PROVIDER_URL", f"http://127.0.0.1:{port}")
-    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
-    async with listener, anyio.create_task_group() as tasks:
-        tasks.start_soon(listener.serve, respond_to_probe)
-        async with application(runtime) as process:
-            await health(process)
-            assert (runtime / "environment-key").read_text() == "lifecycle-secret"
-            config = (Path(workspace_context().environment["XDG_CONFIG_HOME"]) / "crystalline/config.yaml").read_text()
-            assert "probe-test" in config and "lifecycle-secret" not in config
-            assert process.stdin is not None
-            await process.stdin.aclose()
-            with anyio.fail_after(5):
-                assert await process.wait() == 0
-        tasks.cancel_scope.cancel()
-    assert b"lifecycle-secret" not in (runtime / "application-stderr").read_bytes()
     assert_reaped(runtime)
 
 

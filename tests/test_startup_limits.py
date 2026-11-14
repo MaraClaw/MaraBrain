@@ -1,16 +1,14 @@
-"""Prevent captured startup resource failures from permitting engine initialization or serving."""
+"""Prevent captured startup resource failures from permitting engine launch or serving."""
 
 import os
 import subprocess
 import sys
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TextIO
 
 import anyio
 import pytest
-from anyio.abc import Process
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from memory_fake import WORKSPACE_ID
@@ -48,7 +46,7 @@ else:
 """
 
 
-@pytest.mark.parametrize("phase", ["probe", "initialization", "readiness"])
+@pytest.mark.parametrize("phase", ["probe", "readiness"])
 @pytest.mark.parametrize("aggregate", [None, 64])
 async def test_startup_overflow_fails_before_serving_and_reaps_owned_children(
     runtime: Path, monkeypatch: pytest.MonkeyPatch, phase: str, aggregate: int | None
@@ -57,44 +55,18 @@ async def test_startup_overflow_fails_before_serving_and_reaps_owned_children(
     (runtime / "crystalline").write_text(f"#!{sys.executable}\n" + LIMIT_ENGINE)
     monkeypatch.setenv("OVERFLOW_PHASE", phase)
     context = EngineContext.capture(max_transient_processes=2, max_capture_bytes=None if aggregate else 64, max_total_capture_bytes=aggregate)
-    original = anyio.open_process
-    initialized = False
-
-    async def initialize(
-        command: Sequence[str],
-        *,
-        stdin: int | None = None,
-        stdout: int | TextIO | None = subprocess.PIPE,
-        stderr: int | TextIO | None = subprocess.PIPE,
-        env: Mapping[str, str] | None = None,
-    ) -> Process:
-        """Use a real initializer child with controlled raw output and a recorded PID."""
-        nonlocal initialized
-        if command[0] == sys.executable:
-            initialized = True
-            output = "secret-payload" * 1024 if phase == "initialization" else "{}"
-            command = [
-                sys.executable,
-                "-c",
-                f"import os; from pathlib import Path; Path({str(runtime)!r}, 'child-' + str(os.getpid())).touch(); print({output!r})",
-            ]
-        return await original(command, stdin=stdin, stdout=stdout, stderr=stderr, env=env)
-
-    monkeypatch.setattr(anyio, "open_process", initialize)
     failure = pytest.RaisesGroup(CaptureLimitError, flatten_subgroups=True) if phase == "readiness" else pytest.raises(CaptureLimitError)
     with anyio.fail_after(10), failure as error:
         async with engine_lifecycle(Settings(), context=context):
             pytest.fail("Overflow reached serving.")
-    assert initialized == (phase != "probe")
     assert (runtime / "owner").exists() == (phase == "readiness")
     assert "secret-payload" not in str(error.value)
     assert_reaped(runtime)
-    monkeypatch.setattr(anyio, "open_process", original)
     with await run_startup_command([sys.executable, "-c", "print(' ' * 63)"], context) as raw:
         assert len(raw) == 64
 
 
-async def test_control_admission_failure_prevents_preexisting_probe_and_initialization(runtime: Path) -> None:
+async def test_control_admission_failure_prevents_preexisting_probe_and_launch(runtime: Path) -> None:
     """Fail managed preparation immediately when its control slot is already owned."""
     context = EngineContext.capture(max_transient_processes=2)
     with context.transients.admit(control=True), pytest.raises(ProcessAdmissionError):

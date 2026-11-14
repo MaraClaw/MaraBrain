@@ -1,7 +1,6 @@
 """Prove total preparation budgets and serving lifetime through application processes."""
 
 import json
-import os
 import signal
 import subprocess
 import sys
@@ -39,7 +38,7 @@ args = sys.argv[1:]
 pid = os.getpid()
 (root / f"child-{pid}").touch()
 with (root / "events").open("a") as stream:
-    stream.write(json.dumps({"args": args, "pid": pid, "time": time.monotonic(), "key": os.environ.get("EMBEDDING_API_KEY", ""),
+    stream.write(json.dumps({"args": args, "pid": pid, "time": time.monotonic(),
                             "state": os.environ["XDG_STATE_HOME"], "config": os.environ["XDG_CONFIG_HOME"]}) + "\\n")
 phase = os.environ.get("BLOCK_PHASE")
 if args == ["ctl", "status"]:
@@ -63,7 +62,7 @@ elif args == ["serve", "--http", "off"]:
     while True:
         signal.pause()
 elif args[:2] == ["--json", "read"]:
-    print(json.dumps({"store": os.environ["XDG_STATE_HOME"], "key": os.environ.get("EMBEDDING_API_KEY", "")}))
+    print(json.dumps({"store": os.environ["XDG_STATE_HOME"]}))
 else:
     sys.exit(9)
 '''
@@ -133,43 +132,6 @@ async def test_total_deadline_is_not_reset_after_a_slow_preexisting_probe(monkey
 
     assert deadlines == [started + 1.5, started + 1.5]
     assert not workspace_ready
-
-
-@pytest.mark.asyncio
-async def test_initializer_expiry_reaps_writer_without_launching_daemon(budget_runtime: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Cancel a blocking provider subprocess within the total budget before YAML writes."""
-    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
-    port = listener.extra(anyio.abc.SocketAttribute.local_address)[1]
-    received = anyio.Event()
-
-    async def hold_request(stream: anyio.abc.SocketStream) -> None:
-        """Expose provider arrival without responding before the initializer expires."""
-        async with stream:
-            await stream.receive()
-            received.set()
-            await anyio.sleep_forever()
-
-    monkeypatch.setenv("MARABRAIN_STARTUP_TIMEOUT_SECONDS", "1.5")
-    monkeypatch.setenv("EMBEDDING_MODEL", "deadline-model")
-    monkeypatch.setenv("EMBEDDING_DIMS", "3")
-    monkeypatch.setenv("EMBEDDING_PROVIDER_URL", f"http://127.0.0.1:{port}")
-    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
-    async with listener, anyio.create_task_group() as tasks:
-        tasks.start_soon(listener.serve, hold_request)
-        async with application(budget_runtime) as process:
-            reader = await begin_workspace(process)
-            with anyio.fail_after(10):
-                await received.wait()
-            listing = await anyio.run_process(["ps", "-A", "-o", "pid=,ppid="])
-            children = [int(pid) for pid, parent in (line.split() for line in listing.stdout.decode().splitlines()) if int(parent) == process.pid]
-            assert len(children) == 1
-            await activation_failed(process, reader)
-            with pytest.raises(ProcessLookupError):
-                os.kill(children[0], 0)
-        tasks.cancel_scope.cancel()
-    assert not list(budget_runtime.glob("launched-*"))
-    assert not (Path(workspace_context().environment["XDG_CONFIG_HOME"]) / "crystalline/config.yaml").exists()
-    assert_reaped(budget_runtime)
 
 
 @pytest.mark.parametrize("transport", ["stdio", "http"])

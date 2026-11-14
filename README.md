@@ -260,7 +260,7 @@ timeouts and HTTP shutdown grace are separate limits too.
 
 The two optional total budgets are independent. The startup total now applies to each
 workspace activation and covers preparation, the workspace's existing-engine check,
-embedding initialization, managed daemon launch and readiness, and initial domain
+managed daemon launch and readiness, and initial domain
 synchronization as applicable. It never limits the server's serving lifetime. Each
 memory operation's total includes waiting for workspace activation, then domain
 resolution, lock acquisition, domain synchronization and registration, and the final memory command. Compressed
@@ -280,18 +280,17 @@ or workspace reactivation reconciles uncertain domain registration before trusti
 Each application captures an immutable snapshot of its engine execution environment
 at `run_application()` entry or standalone `create_server()` construction. Each workspace
 derives its own HOME/XDG paths, configuration identity, registry, health checks,
-initialization, daemon supervision, and memory tools from that snapshot and the captured
+daemon supervision, and memory tools from that snapshot and the captured
 workspace root. Base captured `CRYSTALLINE_*` overrides, including `CRYSTALLINE_CONFIG`,
 are removed from workspace runtimes; base configuration files are not copied. Later
-process environment changes do not redirect an existing application. Initializer
-credential overlays apply only to that workspace's owned daemon. External mode requires
+process environment changes do not redirect an existing application. External mode requires
 the daemon provisioned for those workspace paths; a successful health probe does not
 identify the external daemon's configuration.
 
 The optional resource limits are independent and default to disabled. With
 `MARABRAIN_MAX_TRANSIENT_PROCESSES=C`, each application shares C-1 slots for memory
-and domain-registry commands and one reserved control slot for health, readiness,
-or embedding initialization across all workspace activations and serving. Saturated lanes fail
+and domain-registry commands and one reserved control slot for health and readiness
+probes across all workspace activations and serving. Saturated lanes fail
 immediately before launching a child or CLI worker; commands do not queue. Capacity
 remains occupied until the child is reaped and its worker finishes. Separate
 applications have independent capacity; persistent daemons and LLM calls are excluded.
@@ -340,7 +339,7 @@ malformed values, booleans, fractional values, and
 nonpositive capacities fail configuration validation.
 
 `MARABRAIN_MAX_CAPTURE_BYTES=S` limits raw stdout retained per captured child for
-memory, registry, status and embedding initialization commands. Exactly S bytes can
+memory, registry and status commands. Exactly S bytes can
 succeed only after EOF, successful exit and response validation. The first excess
 byte causes a fixed, redacted failure and owned-child cleanup; truncated JSON is
 never returned and mutations are never retried. Retained raw stdout uses at most
@@ -351,7 +350,7 @@ values are rejected, as is capacity below 2.
 
 `MARABRAIN_MAX_TOTAL_CAPTURE_BYTES=T` independently limits logical retained raw
 stdout payload across all captures in one application, including workspace memory
-and registry commands, status/readiness probes, and embedding initialization.
+and registry commands, and status/readiness probes.
 Storage grows incrementally under this policy, so small responses do not reserve
 the per-child ceiling. Each chunk reserves bytes atomically before retention;
 the first chunk exceeding either configured byte limit fails immediately with the
@@ -361,8 +360,7 @@ data-capture pressure. Separate applications have independent byte budgets.
 
 Aliased views of one raw buffer count once. Its charge remains until child reaping,
 worker joining or stream closure, and JSON parsing or discard have all finished.
-Raw storage is cleared before its charge is released; initializer output is
-released before daemon launch and serving. This is a retained-payload bound,
+Raw storage is cleared before its charge is released. This is a retained-payload bound,
 not an RSS or allocator guarantee: parsed objects, allocator slack, fixed read and
 transport buffers, stdin, stderr, daemon diagnostics, and LLM responses are excluded.
 Unset or empty preserves existing capture allocation behavior. Boolean, fractional,
@@ -383,7 +381,7 @@ at all: a refusal at either level leaves no charge at the other. Refusal is imme
 with the same fixed process-capacity or capture-limit error; there is no queue, and
 the error names no workspace. Charges last until the child is reaped, its worker
 has joined, and its output is parsed or discarded, including on timeout, cancellation,
-and launch failure. Health, readiness, and embedding initialization keep using the
+and launch failure. Health and readiness probes keep using the
 reserved control slot and are never charged to a workspace share. Shares are counted
 per workspace ID within one application, so reactivating a retired workspace cannot
 enlarge its share while earlier commands finish; separate applications keep independent
@@ -458,7 +456,7 @@ under the persistent mount if its data must survive replacement. This volume sur
 container replacement; back it up before removing it. Existing volumes must be writable
 by UID/GID 65532. A managed server requires exclusive workspace HOME/XDG paths; do not
 share the volume with another running engine or managed server. On first activation,
-each workspace's Crystalline daemon may download its embedding model; subsequent
+each workspace's Crystalline daemon downloads its default local embedding model; subsequent
 activations reuse that workspace's cache. Model storage grows with persisted workspaces;
 daemon memory grows with resident workspaces. The optional resident cap retires idle
 daemons without removing their data. Shutdown reaps owned daemons and preserves data. Health checks
@@ -466,48 +464,19 @@ all resident engines within one total deadline, not embedding-model readiness or
 semantic-search quality. See the upstream [deployment guide](https://github.com/jordiboehme/crystalline/blob/v0.32.2/docs/deployment.md)
 for offline model provisioning.
 
-### Remote embeddings
+### Embeddings
 
-Set `EMBEDDING_MODEL`, `EMBEDDING_PROVIDER_URL`, and `EMBEDDING_DIMS` together in
-`.env` to use an OpenAI-compatible embedding provider. Set `EMBEDDING_API_KEY`
-when the endpoint requires bearer authentication; otherwise leave it empty.
+Semantic search uses Crystalline's default local embedding model,
+`granite-embedding-97m-multilingual-r2`, which each workspace daemon downloads into
+its own cache on first activation and runs in-process. MaraBrain has no remote
+embedding provider and writes no embedding configuration; Crystalline's defaults apply.
 
-| Environment variable | Meaning |
-| --- | --- |
-| `EMBEDDING_MODEL` | Model name accepted by the provider |
-| `EMBEDDING_PROVIDER_URL` | HTTP or HTTPS API base, including any version prefix, without `/embeddings` |
-| `EMBEDDING_DIMS` | Expected positive vector length, checked against the provider response |
-| `EMBEDDING_API_KEY` | Optional bearer token, passed only at runtime |
-| `EMBEDDING_API_KEY_FILE` | Absolute host file path alternative, mounted read-only at `/run/secrets/embedding_api_key` |
-
-For each credential, specify either its raw variable or its file variable, not
-both nonempty. Files must be readable by UID/GID 65532 and contain a nonempty
-UTF-8 value without embedded line breaks or NUL; one terminal LF or CRLF is
-removed. Values are resolved at startup, so restart after rotating a file. File
-contents are not placed in Docker arguments, configured environment, or YAML;
-the managed Python process supplies the embedding key to each workspace's daemon environment.
-
-During each workspace activation, before starting its managed Crystalline daemon,
-bootstrap sends a small embedding request and checks its response and vector length.
-Provider configuration and bootstrap errors that previously stopped engine startup
-now surface on the first workspace activation, including authentication failures,
-unreachable providers, and mismatched dimensions. Crystalline does
-not support a `dimensions` request field, so choose a provider or model that
-already returns the expected vector length.
-
-After the check succeeds, activation merges provider settings into that workspace's
-own Crystalline configuration, preserving its unrelated settings and domains.
-It never rewrites the base `/data/config/crystalline/config.yaml` or copies base configuration.
-The file stores the API key's environment variable name, never its value. The
-remote provider avoids the default Granite embedding-model download. Restart the
-container after changing these variables; the activation check does not continuously
-monitor the provider, and MCP health checks only resident Crystalline engines.
-
-Leaving all embedding variables unset or empty preserves each workspace's existing
-Crystalline configuration and skips the remote-provider check. A fresh workspace uses the
-default local model. Changing providers or models does not automatically migrate
-existing vectors; follow Crystalline's indexing guidance before reusing an index
-with a different embedding space.
+Workspaces activated by an earlier MaraBrain release with `EMBEDDING_*` settings keep
+an `embeddings` section with `provider: openai-compatible` in their own
+`config.yaml` under that workspace's configuration directory. Remove that section
+to return the workspace to the local model, restart, and run `crystalline reindex --embed`
+with that workspace's environment to embed its memories with the local model; vectors
+from the old embedding space are not reused.
 
 ### Optional read compression
 

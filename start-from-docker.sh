@@ -32,7 +32,6 @@ export MARABRAIN_MAX_INPUT_BYTES MARABRAIN_MAX_TOTAL_INPUT_BYTES
 export MARABRAIN_MAX_RESIDENT_WORKSPACES
 export MARABRAIN_DOMAIN_COMMAND_CAPACITY LLM_COMPRESSION_CACHE_MAX_ENTRIES LLM_COMPRESSION_CACHE_MAX_BYTES LLM_COMPRESSION_CACHE_TOTAL_MAX_BYTES
 export MARABRAIN_WORKSPACE_ROOT
-export EMBEDDING_MODEL EMBEDDING_DIMS EMBEDDING_PROVIDER_URL EMBEDDING_API_KEY
 export LLM_MODEL LLM_PROVIDER_URL LLM_API_KEY LLM_PROVIDER
 export LLM_REASONING_EFFORT LLM_TEMPERATURE LLM_MAX_INPUT_TOKENS LLM_MAX_TOKENS LLM_TIMEOUT_SECONDS
 
@@ -50,19 +49,6 @@ if [ -n "${MARABRAIN_BEARER_SECRET_FILE:-}" ]; then
     set -- "$@" --mount "type=bind,source=$MARABRAIN_BEARER_SECRET_FILE,target=/run/secrets/marabrain_bearer,readonly" \
         --env MARABRAIN_BEARER_SECRET_FILE=/run/secrets/marabrain_bearer
 fi
-if [ -n "${EMBEDDING_API_KEY_FILE:-}" ]; then
-    case $EMBEDDING_API_KEY_FILE in
-        /*) ;; *) printf '%s\n' 'EMBEDDING_API_KEY_FILE must be an absolute path' >&2; exit 1 ;;
-    esac
-    case $EMBEDDING_API_KEY_FILE in
-        *,*) printf '%s\n' 'Secret file paths cannot contain commas' >&2; exit 1 ;;
-    esac
-    if [ ! -f "$EMBEDDING_API_KEY_FILE" ] || [ ! -r "$EMBEDDING_API_KEY_FILE" ]; then
-        printf '%s\n' 'Credential file must be a readable regular file' >&2; exit 1
-    fi
-    set -- "$@" --mount "type=bind,source=$EMBEDDING_API_KEY_FILE,target=/run/secrets/embedding_api_key,readonly" \
-        --env EMBEDDING_API_KEY_FILE=/run/secrets/embedding_api_key
-fi
 
 docker build --tag "$MARABRAIN_IMAGE" "$script_dir"
 docker run --rm --init --read-only --tmpfs /tmp --cap-drop ALL \
@@ -79,10 +65,10 @@ docker run --rm --init --read-only --tmpfs /tmp --cap-drop ALL \
     --env MARABRAIN_MAX_INPUT_BYTES --env MARABRAIN_MAX_TOTAL_INPUT_BYTES \
     --env MARABRAIN_DOMAIN_COMMAND_CAPACITY --env LLM_COMPRESSION_CACHE_MAX_ENTRIES --env LLM_COMPRESSION_CACHE_MAX_BYTES \
     --env LLM_COMPRESSION_CACHE_TOTAL_MAX_BYTES \
-    --env MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS --env MARABRAIN_LOG_LEVEL --env EMBEDDING_API_KEY \
+    --env MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS --env MARABRAIN_LOG_LEVEL \
     --env LLM_MODEL --env LLM_PROVIDER_URL --env LLM_API_KEY --env LLM_PROVIDER \
     --env LLM_REASONING_EFFORT --env LLM_TEMPERATURE --env LLM_MAX_INPUT_TOKENS --env LLM_MAX_TOKENS --env LLM_TIMEOUT_SECONDS \
-    "$MARABRAIN_IMAGE" python -c 'import os; from marabrain.config import Settings; from marabrain.credentials import resolve_secret; Settings(); resolve_secret(os.environ.get("EMBEDDING_API_KEY"), os.environ.get("EMBEDDING_API_KEY_FILE"))'
+    "$MARABRAIN_IMAGE" python -c 'from marabrain.config import Settings; Settings()'
 exec docker run --rm --name "$MARABRAIN_CONTAINER" --init --read-only --tmpfs /tmp \
     --cap-drop ALL --security-opt no-new-privileges --stop-timeout 10 \
     "$@" \
@@ -100,7 +86,6 @@ exec docker run --rm --name "$MARABRAIN_CONTAINER" --init --read-only --tmpfs /t
     --env MARABRAIN_DOMAIN_COMMAND_CAPACITY --env LLM_COMPRESSION_CACHE_MAX_ENTRIES --env LLM_COMPRESSION_CACHE_MAX_BYTES \
     --env LLM_COMPRESSION_CACHE_TOTAL_MAX_BYTES \
     --env MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS --env MARABRAIN_LOG_LEVEL \
-    --env EMBEDDING_MODEL --env EMBEDDING_DIMS --env EMBEDDING_PROVIDER_URL --env EMBEDDING_API_KEY \
     --env LLM_MODEL --env LLM_PROVIDER_URL --env LLM_API_KEY --env LLM_PROVIDER \
     --env LLM_REASONING_EFFORT --env LLM_TEMPERATURE --env LLM_MAX_INPUT_TOKENS --env LLM_MAX_TOKENS --env LLM_TIMEOUT_SECONDS \
     "$MARABRAIN_IMAGE"
