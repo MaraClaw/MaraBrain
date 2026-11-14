@@ -94,12 +94,22 @@ def test_http_secret_is_required_and_redacted(monkeypatch: pytest.MonkeyPatch) -
 
 @pytest.mark.asyncio
 async def test_mcp_inventory_and_health(engine: Path, capfd: pytest.CaptureFixture[str]) -> None:
-    """Verify the MCP identity, six-tool inventory, and readiness before any workspace activates."""
+    """Verify the MCP identity, nine-tool inventory, and readiness before any workspace activates."""
     async with Client(create_server(Settings())) as client:
         assert client.server_info is not None
         assert client.server_info.name == "marabrain-mcp"
         tools = await client.list_tools()
-        assert [tool.name for tool in tools] == ["health", "create_memory", "read_memory", "edit_memory", "delete_memory", "search_memories"]
+        assert [tool.name for tool in tools] == [
+            "health",
+            "create_memory",
+            "read_memory",
+            "edit_memory",
+            "delete_memory",
+            "search_memories",
+            "build_memory_context",
+            "review_memories",
+            "get_memory_vocabulary",
+        ]
         assert tools[0].annotations is not None
         assert tools[0].annotations.read_only_hint is True
         assert tools[0].annotations.idempotent_hint is True

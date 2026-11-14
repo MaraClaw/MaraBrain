@@ -139,7 +139,17 @@ async def assert_overflow_reaped[T: ClientTransport](client: Client[T], probe: P
 
 async def assert_transport_process_policy[T: ClientTransport](client: Client[T], probe: ProcessProbe, independent: Client[T] | None = None) -> None:
     """Verify shared admission, reserved health, overflow cleanup, and native response reuse."""
-    inventory = ["health", "create_memory", "read_memory", "edit_memory", "delete_memory", "search_memories"]
+    inventory = [
+        "health",
+        "create_memory",
+        "read_memory",
+        "edit_memory",
+        "delete_memory",
+        "search_memories",
+        "build_memory_context",
+        "review_memories",
+        "get_memory_vocabulary",
+    ]
     assert [tool.name for tool in await client.list_tools()] == inventory
     async with anyio.create_task_group() as tasks:
         held = tasks.create_task(client.call_tool("read_memory", {"workspace_id": WORKSPACE_ID, "domain": "notes", "permalink": "held"}))

@@ -3,21 +3,21 @@
 🦞 Second Brain For OpenClaw-backed Agents.
 
 Python MCP server named `marabrain-mcp`, built with FastMCP. The interface contains
-six tools and no resources or prompts. `health` takes no arguments and returns
+nine tools (`health` plus eight memory tools) and no resources or prompts. `health` takes no arguments and returns
 `{"status": "ok", "version": "0.4.7"}` when every resident workspace's
 [Crystalline](https://github.com/jordiboehme/crystalline) engine answers
 `crystalline ctl status` within one total health probe deadline. With zero resident
 workspaces, the service is ready and `health` succeeds without starting an engine.
 Missing executables, failed probes, and probes exceeding that shared deadline produce
 an MCP tool error. Health does not assure embedding-model readiness.
-The other five tools manage memories through the Crystalline CLI; see [Memory tools](#memory-tools).
+The other eight tools manage memories through the Crystalline CLI; see [Memory tools](#memory-tools).
 
 ## Memory tools
 
 The tools run the pinned Crystalline 0.32.2 `crystalline --json` command without a shell,
 send content on stdin, and return its JSON object unchanged (native fields, no added keys)
 unless `read_memory` is called with `compress=true`, as described below.
-All five memory tools require `workspace_id`: a strict, case-sensitive ASCII string
+All eight memory tools require `workspace_id`: a strict, case-sensitive ASCII string
 of 1-64 characters matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. There is no default,
 normalization, or adoption of legacy data. For example, `Team_A` and `team_a` are
 different workspaces; missing IDs, non-string values, whitespace, dots, and Unicode
@@ -79,7 +79,10 @@ reconciles that workspace's complete list.
 | `read_memory` | `workspace_id`, `domain`, `permalink`; optional `compress` (boolean, default false), `query` (default null) | Returns full Markdown with frontmatter, `checksum`, links, observations, and relations; compression replaces returned `content` with distilled context and adds `compressed: true` |
 | `edit_memory` | `workspace_id`, `domain`, `permalink`, `operation`, optional `expected_checksum` | Applies one edit operation |
 | `delete_memory` | `workspace_id`, `domain`, `permalink` | Permanently deletes without confirmation; no checksum guard |
-| `search_memories` | required `workspace_id`, nonempty `query` and nonempty `domains` (list); optional `tags` (list), `limit` (1-100, default 10), `page` (1 or more, default 1) | Searches the named domains in that workspace and returns native JSON unchanged |
+| `search_memories` | required `workspace_id`, nonempty `query` and nonempty `domains` (list); optional `tags` (list), `limit` (1-100, default 10), `page` (1 or more, default 1), `status` (one lifecycle status, such as `stable`) | Searches the named domains in that workspace and returns native JSON unchanged |
+| `build_memory_context` | `workspace_id`, `domain`, `permalink`; optional `domains` (list), `depth` (1-3), `max_related` (1-100), `timeframe` (such as `7d`) | Returns the graph neighbourhood of one memory as nodes and typed edges, without content |
+| `review_memories` | `workspace_id`, nonempty `domains` (list); optional `families` (list of `temporal`, `structure`, `redundancy`, `meaning`), `limit` (1-100, default 10), `page` (1 or more, default 1) | Sweeps the named domains read-only and returns a ranked queue of maintenance findings |
+| `get_memory_vocabulary` | `workspace_id`, `domain` | Lists the categories, relation types, statuses, tags, and types a domain uses, with counts |
 
 `search_memories` requires both query text and at least one domain; a missing, null, empty,
 or whitespace-only value is rejected before anything runs. Each hit includes the `domain` and
@@ -114,6 +117,7 @@ Edit `operation` is an object whose `type` selects the fields:
 | `find_replace` | `find_text`; optional `expected_replacements` (0 or more) |
 | `replace_section` | `section`; optional `include_subsections` (default false) |
 | `insert_before_section`, `insert_after_section` | `section` |
+| `set_frontmatter` | No `content`; `key`; optional `value` or `values` (see below) |
 
 ```json
 {"workspace_id": "team_a", "domain": "notes", "permalink": "team/plan", "expected_checksum": "<checksum from read_memory>",
@@ -122,8 +126,78 @@ Edit `operation` is an object whose `type` selects the fields:
 
 Section content is the section body; the heading line stays. Pass the `checksum` from
 `read_memory` as `expected_checksum` so an edit is refused if the memory changed after
-that read; without it the last write wins. Explicit domain administration, metadata editing, and
-attachments are not exposed.
+that read; without it the last write wins. Domain administration and attachments are not
+exposed, and metadata fields are edited only through `set_frontmatter`.
+
+`set_frontmatter` assigns or removes one frontmatter field and leaves the body alone. `key` is one of
+`tags`, `status`, `valid_from`, `valid_to`, `stale_after`, `source_date`, `resource`,
+`source_version`, `sources`, `salience`, `verified`, or `evolve_ack`. `tags` and `sources` take
+`values`, the whole new list (up to 64 items, none containing a comma); an empty list, or omitting
+`values`, removes the key. Every other key takes `value`; omitting it removes the field, except for
+`verified`, where omitting it stamps a verification by the caller. The date keys (`valid_from`,
+`valid_to`, `stale_after`, `source_date`) must be `YYYY-MM-DD`, `salience` is a number from 0 to 10,
+and `status` is a single token of at most 64 characters that does not start with a hyphen. Giving
+`value` to `tags` or `sources`, or `values` to any other key, is rejected. Setting a field to the value
+it already has returns `unchanged: true`. `expected_checksum` works as for the other operations. The
+operation sends nothing on stdin, so `MARABRAIN_MAX_INPUT_BYTES` does not apply to it; like every edit,
+it purges cached compressions of that memory.
+
+```json
+{"workspace_id": "team_a", "domain": "notes", "permalink": "team/plan", "expected_checksum": "<checksum from read_memory>",
+ "operation": {"type": "set_frontmatter", "key": "status", "value": "superseded"}}
+```
+
+### Knowledge graph
+
+Memory bodies carry a graph. A bullet such as `- [decision] Ship behind a flag #release` is an
+observation: a category, a fact, and optional tags. A bullet such as `- depends_on [[Rollout plan]]`
+is a relation: a type followed by a link to a target title. Quote a multi-word type, as in
+`- "relates to" [[Rollout plan]]`; an unquoted `- see also [[Rollout plan]]` becomes a plain link, not
+a relation. A target resolves by title within the memory's own domain, and `[[other-domain:Title]]`
+crosses into another domain. Unresolved targets are kept and flagged `resolved: false` in
+`read_memory`. That response also lists `inbound.refs`, the memories that link to the one read. They can
+name engrams in other domains, including domains the allowlist denies, because admission does not
+redact linked metadata.
+
+`build_memory_context(workspace_id, domain, permalink, domains=null, depth=null, max_related=null, timeframe=null)`
+returns the neighbourhood of one memory as native JSON without any memory content:
+`{anchor, depth, timeframe, nodes, edges}`. Each node has `id`, `domain`, `permalink`, `title`, `type`,
+and `seed`; each edge has `from`, `to`, `kind`, and `rel_type`. Traversal follows relations and links in
+both directions. `depth` is 1 to 3 (the engine's default is 1), `max_related` (1 to 100) keeps the
+top-ranked neighbours, and `timeframe` is one to four digits without a leading zero followed by `d`, `w`,
+or `y`, such as `7d`, `2w`, or `1y`. MaraBrain validates `timeframe` itself because Crystalline silently
+ignores malformed values. The neighbourhood is restricted to the anchor's domain plus any extra
+`domains`; every listed domain passes domain admission, and a list mixing allowed and denied domains is
+rejected in full. MaraBrain builds the anchor URL on the server, so callers never pass URLs or globs, and
+a missing anchor is a tool error. Read the nodes you need with `read_memory`, using each node's `domain`
+and `permalink`.
+
+```json
+{"workspace_id": "team_a", "domain": "notes", "permalink": "team/plan", "depth": 2, "max_related": 10, "timeframe": "30d"}
+```
+
+To retire a fact that a newer memory replaces, write the new memory with `- supersedes [[Old Title]]`.
+On the old memory, use `set_frontmatter` to set `status` to `superseded`, append
+`- superseded_by [[New Title]]`, and optionally set `valid_to`. Retired statuses (`superseded`,
+`deprecated`, `archived`, `legacy`) fade in search ranking. `search_memories` with `status="stable"`
+returns only current memories (`stable` also matches the legacy `current`); a search takes one status value.
+
+`review_memories(workspace_id, domains, families=null, limit=10, page=1)` runs a read-only
+`crystalline evolve` sweep over the named domains and returns native JSON with a ranked `queue` of
+findings plus `guidance`. Each finding has `rule`, `class` (`mechanical` or `judgment`), `domain`,
+`permalink`, `title`, `evidence`, `finding`, `fix`, `line`, and `priority`. `families` restricts the
+sweep to any of `temporal`, `structure`, `redundancy`, and `meaning`. Typical findings are `V102` (an
+unresolved link), `V101` (a current memory references a retired one), and `V004` (a memory marked
+superseded without a successor). The sweep changes nothing.
+
+`get_memory_vocabulary(workspace_id, domain)` returns native JSON listing the `categories`,
+`relation_types`, `statuses`, `tags` (with engram and observation counts), and `types` the domain
+uses. Check it before writing so new memories reuse existing terms.
+
+`build_memory_context`, `review_memories`, and `get_memory_vocabulary` are read-only, idempotent,
+closed-world tools. They use the same workspace lease, domain admission, deadlines, process and capture
+limits, and per-domain command capacity as `search_memories`. `read_memory` remains the only open-world
+tool.
 
 Arguments are validated before anything runs. Domains, titles, permalinks, folders, and
 queries must not start with a hyphen, contain control characters, or have surrounding
@@ -304,7 +378,7 @@ cleanup finishes. A new workspace can retire the least recently used idle runtim
 if all slots are starting, leased, or retiring, the request fails immediately with
 `Resident workspace capacity is busy.` There is no queue waiting for busy capacity.
 Concurrent requests for the same activation share it, and canceling one caller does
-not cancel startup for the others. All five memory tools lease the runtime through
+not cancel startup for the others. All eight memory tools lease the runtime through
 registry work, native commands, and their cleanup. Recency records memory operations;
 health pins only the resident snapshot and does not refresh recency or reactivate
 retired workspaces. Unexpected daemon death remains fatal to the application.
@@ -645,3 +719,10 @@ uv build
 Tests exercise configuration validation and the MCP interface, including
 authentication and transport boundaries. No external service credentials are
 needed for the test suite.
+
+`tests/integration` runs the real pinned engine and is excluded by default; run it with
+`uv run --no-sync pytest tests/integration -o addopts="" --basetemp=/tmp/mbit` (a short base
+directory keeps the workspace socket path within the macOS limit).
+`uv run --no-sync python benchmarks/graph_eval.py` evaluates graph-assisted recall, supersede
+currentness, review detection, and concurrent store and read load on an isolated engine, and
+writes `benchmarks/results/report.json` and `report.md`.

@@ -5,10 +5,13 @@
 
 ## OVERVIEW
 
-Python FastMCP server named `marabrain-mcp`. Its MCP interface exposes exactly six
+Python FastMCP server named `marabrain-mcp`. Its MCP interface exposes exactly nine
 tools and no resources or prompts: `health`, returning `{"status":"ok","version":"0.4.7"}`,
-and `create_memory`, `read_memory`, `edit_memory`, `delete_memory`, and `search_memories`,
-which run the pinned Crystalline CLI and return its native JSON. Health also requires the
+and `create_memory`, `read_memory`, `edit_memory`, `delete_memory`, `search_memories`,
+`build_memory_context`, `review_memories`, and `get_memory_vocabulary`,
+which run the pinned Crystalline CLI and return its native JSON. `edit_memory` includes a
+`set_frontmatter` operation for lifecycle fields, and `search_memories` takes an optional `status`
+filter. Health also requires the
 Crystalline daemon to answer `crystalline ctl status` within two seconds; engine failure is a tool error.
 
 ## STRUCTURE
@@ -18,6 +21,7 @@ MaraBrain/
 |-- marabrain/             # Runtime package; configuration and server factory
 |-- docs/                  # Python docstring standard
 |-- tests/                 # Automated configuration, MCP transport, and memory-tool tests
+|-- benchmarks/            # Real-engine graph evaluation and load script; results/ holds the last report
 |-- test_health.py         # Client smoke check against an existing HTTP server
 |-- start-from-docker.sh   # Build, validate, and run a foreground container
 |-- docker-entrypoint.sh   # Supervise Crystalline and the MCP server
@@ -33,7 +37,7 @@ MaraBrain/
 | Task | Location | Notes |
 | --- | --- | --- |
 | Server construction and tool registration | `marabrain/server.py:create_server` | Factory accepts typed settings; tests use it directly |
-| Memory tools | `marabrain/memory_tools.py` | Register five tools; each builds one CLI argv |
+| Memory tools | `marabrain/memory_tools.py` | Register eight tools; each builds one CLI argv |
 | Memory tool inputs | `marabrain/models.py` | Validated argument types and the discriminated edit union |
 | Crystalline CLI adapter | `marabrain/crystalline.py:run_json` | Single no-retry subprocess call; stdin content, 30-second deadline, fixed errors |
 | Transport startup | `marabrain/server.py:main` | Both console script and module delegate here |
@@ -43,6 +47,7 @@ MaraBrain/
 | Runtime deployment | `Dockerfile`, `start-from-docker.sh` | Image security and launcher lifecycle are coupled |
 | Automated behavior contracts | `tests/test_server.py`, `tests/test_memory_tools.py` | Stdio and HTTP security boundaries; memory tools use a fake `crystalline` on PATH |
 | Live endpoint check | `test_health.py` | Requires an existing server and bearer credential |
+| Graph evaluation and stress | `benchmarks/graph_eval.py` | Needs Crystalline 0.32.2 on PATH; isolated `/tmp` root; not part of pytest |
 
 ## CODE MAP
 
@@ -90,6 +95,9 @@ uv build
 - The suite checks enum parsing, invalid settings, secret redaction, exact tool
   inventory, stdio startup, and HTTP responses: invalid credentials 401,
   disallowed Host 421, and disallowed Origin 403.
+- `tests/test_memory_graph.py` covers the graph tools (`build_memory_context`,
+  `review_memories`, `get_memory_vocabulary`): one CLI command each, exact registration
+  names, argument validation before execution, and denied domains.
 - `uv run --no-sync python test_health.py` checks a running HTTP endpoint;
   it is separate from pytest. It validates structured health content and fails
   on connection, authentication, tool, or response validation errors.
