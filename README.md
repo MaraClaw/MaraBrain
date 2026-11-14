@@ -14,7 +14,7 @@ The other five tools manage memories through the Crystalline CLI; see [Memory to
 
 ## Memory tools
 
-The tools run the pinned Crystalline 0.32.1 `crystalline --json` command without a shell,
+The tools run the pinned Crystalline 0.32.2 `crystalline --json` command without a shell,
 send content on stdin, and return its JSON object unchanged (native fields, no added keys)
 unless `read_memory` is called with `compress=true`, as described below.
 All five memory tools require `workspace_id`: a strict, case-sensitive ASCII string
@@ -424,7 +424,7 @@ responses; credentials are redacted from configuration errors.
 ## Docker
 
 The multi-stage image uses `python:3.15.2-slim`, installs locked production
-dependencies, and copies the Crystalline v0.32.1 binary from its official
+dependencies, and copies the Crystalline v0.32.2 binary from its official
 multi-architecture image pinned by digest. It runs HTTP and lazily supervised
 workspace Crystalline daemons as a non-root user. Copy `.env.example` to `.env`
 and set `MARABRAIN_BEARER_SECRET` to a generated secret as described above, then run:
@@ -463,7 +463,7 @@ activations reuse that workspace's cache. Model storage grows with persisted wor
 daemon memory grows with resident workspaces. The optional resident cap retires idle
 daemons without removing their data. Shutdown reaps owned daemons and preserves data. Health checks
 all resident engines within one total deadline, not embedding-model readiness or
-semantic-search quality. See the upstream [deployment guide](https://github.com/jordiboehme/crystalline/blob/v0.32.1/docs/deployment.md)
+semantic-search quality. See the upstream [deployment guide](https://github.com/jordiboehme/crystalline/blob/v0.32.2/docs/deployment.md)
 for offline model provisioning.
 
 ### Remote embeddings
