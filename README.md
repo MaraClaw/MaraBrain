@@ -476,6 +476,11 @@ one byte is refused; multibyte text is counted in encoded bytes, not characters.
 check runs before the workspace is leased, so a refused call runs no Crystalline command,
 activates no workspace, and retires no other tenant's idle runtime.
 
+Over HTTP, the MCP SDK also rejects any request body larger than 4 MiB with status 413
+before MaraBrain sees it. JSON escaping counts toward that limit, so the largest content a
+single HTTP `create_memory` or `edit_memory` call can carry is somewhat below 4 MiB. Stdio
+has no such ceiling.
+
 `MARABRAIN_MAX_TOTAL_INPUT_BYTES=T` independently limits the stdin bytes held by
 in-flight commands across all workspaces in one application. The encoded size is
 reserved before the child or CLI worker is created and refused immediately, without
