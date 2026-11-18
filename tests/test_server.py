@@ -121,6 +121,18 @@ async def test_mcp_inventory_and_health(engine: Path, capfd: pytest.CaptureFixtu
     assert PROBE_NOISE not in "".join(capfd.readouterr())
 
 
+@pytest.mark.asyncio
+async def test_header_validation_schemas_match_the_advertised_tools(engine: Path) -> None:
+    """Serve Mcp-Param header validation the exact input schemas tools/list advertises, without a per-call listing."""
+    server = create_server(Settings())
+    async with Client(server) as client:
+        advertised = {tool.name: tool.input_schema for tool in await client.list_tools()}
+        lookup = server._mcp_server.get_tool_input_schema
+        assert lookup is not None
+        assert {name: lookup(name) for name in advertised} == advertised
+        assert lookup("unknown_tool") is None
+
+
 @pytest.mark.parametrize("mode", ["missing", "unexecutable", "fail", "hang"])
 @pytest.mark.asyncio
 async def test_health_fails_without_a_responsive_engine(engine: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str], mode: str) -> None:
