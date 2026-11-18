@@ -377,7 +377,8 @@ remains occupied until the child is reaped and its worker finishes. Separate
 applications have independent capacity; persistent daemons and LLM calls are excluded.
 Managed daemon count is independent of this transient limit. Without a resident cap,
 it grows with activated workspaces. Account for each resident workspace's daemon memory
-and embedding-model copies.
+and embedding-model copies: in `benchmarks/http_stress.py` on Crystalline 0.33.0, each
+daemon held roughly 90 to 340 MB resident under load. Set a resident cap that fits the host.
 
 In managed mode, `MARABRAIN_MAX_RESIDENT_WORKSPACES=4` caps resident runtimes at four.
 Starting, ready, and retiring runtimes occupy their slots until owned daemon and helper

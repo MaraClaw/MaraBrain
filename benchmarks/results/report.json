@@ -1,10 +1,10 @@
 {
-  "engine": "0.32.2",
-  "started": "2026-11-14T23:13:46+0700",
+  "engine": "0.33.0",
+  "started": "2026-11-18T23:19:56+0700",
   "machine": "Darwin arm64",
   "setup": {
-    "corpus_write_s": 3.0,
-    "embedding_wait_s": 0.0,
+    "corpus_write_s": 6.6,
+    "embedding_wait_s": 0.1,
     "embedded_chunks": 141,
     "total_chunks": 141,
     "search_modes": {
@@ -76,14 +76,14 @@
           "ok": 48,
           "errors": 0,
           "error_samples": [],
-          "p50_ms": 15.1,
-          "p95_ms": 16.2,
-          "p99_ms": 16.5,
+          "p50_ms": 26.7,
+          "p95_ms": 28.7,
+          "p99_ms": 30.5,
           "mean_ms": 0.0
         }
       },
-      "wall_s": 0.73,
-      "ok_per_s": 65.6,
+      "wall_s": 1.29,
+      "ok_per_s": 37.19,
       "operations": 48,
       "unresolved_links_after": 0
     },
@@ -93,14 +93,14 @@
           "ok": 48,
           "errors": 0,
           "error_samples": [],
-          "p50_ms": 19.1,
-          "p95_ms": 41.3,
-          "p99_ms": 52.3,
-          "mean_ms": 0.0
+          "p50_ms": 53.1,
+          "p95_ms": 84.2,
+          "p99_ms": 93.8,
+          "mean_ms": 0.1
         }
       },
-      "wall_s": 0.3,
-      "ok_per_s": 160.26,
+      "wall_s": 0.69,
+      "ok_per_s": 69.55,
       "operations": 48,
       "unresolved_links_after": 0
     },
@@ -110,14 +110,14 @@
           "ok": 48,
           "errors": 0,
           "error_samples": [],
-          "p50_ms": 29.7,
-          "p95_ms": 96.3,
-          "p99_ms": 105.4,
-          "mean_ms": 0.0
+          "p50_ms": 117.2,
+          "p95_ms": 146.1,
+          "p99_ms": 208.2,
+          "mean_ms": 0.1
         }
       },
-      "wall_s": 0.3,
-      "ok_per_s": 162.65,
+      "wall_s": 0.75,
+      "ok_per_s": 63.66,
       "operations": 48,
       "unresolved_links_after": 0
     }
@@ -129,32 +129,32 @@
           "ok": 50,
           "errors": 0,
           "error_samples": [],
-          "p50_ms": 24.6,
-          "p95_ms": 45.2,
-          "p99_ms": 50.0,
+          "p50_ms": 46.4,
+          "p95_ms": 68.6,
+          "p99_ms": 76.3,
           "mean_ms": 0.0
         },
         "read_memory": {
           "ok": 50,
           "errors": 0,
           "error_samples": [],
-          "p50_ms": 16.7,
-          "p95_ms": 37.3,
-          "p99_ms": 58.1,
+          "p50_ms": 44.8,
+          "p95_ms": 62.3,
+          "p99_ms": 71.4,
           "mean_ms": 0.0
         },
         "search_memories": {
           "ok": 50,
           "errors": 0,
           "error_samples": [],
-          "p50_ms": 28.6,
-          "p95_ms": 54.8,
-          "p99_ms": 62.4,
-          "mean_ms": 0.0
+          "p50_ms": 56.1,
+          "p95_ms": 82.0,
+          "p99_ms": 92.1,
+          "mean_ms": 0.1
         }
       },
-      "wall_s": 0.94,
-      "ok_per_s": 158.99,
+      "wall_s": 1.81,
+      "ok_per_s": 82.93,
       "operations": 150
     },
     "workers_8": {
@@ -163,32 +163,32 @@
           "ok": 50,
           "errors": 0,
           "error_samples": [],
-          "p50_ms": 31.1,
-          "p95_ms": 91.0,
-          "p99_ms": 100.2,
-          "mean_ms": 0.0
+          "p50_ms": 86.7,
+          "p95_ms": 138.5,
+          "p99_ms": 164.1,
+          "mean_ms": 0.1
         },
         "read_memory": {
           "ok": 50,
           "errors": 0,
           "error_samples": [],
-          "p50_ms": 28.4,
-          "p95_ms": 108.0,
-          "p99_ms": 150.6,
-          "mean_ms": 0.0
+          "p50_ms": 76.0,
+          "p95_ms": 122.0,
+          "p99_ms": 134.8,
+          "mean_ms": 0.1
         },
         "search_memories": {
           "ok": 50,
           "errors": 0,
           "error_samples": [],
-          "p50_ms": 44.0,
-          "p95_ms": 108.4,
-          "p99_ms": 128.5,
-          "mean_ms": 0.0
+          "p50_ms": 81.5,
+          "p95_ms": 132.8,
+          "p99_ms": 148.6,
+          "mean_ms": 0.1
         }
       },
-      "wall_s": 0.8,
-      "ok_per_s": 186.47,
+      "wall_s": 1.52,
+      "ok_per_s": 98.76,
       "operations": 150
     },
     "workers_16": {
@@ -197,32 +197,32 @@
           "ok": 50,
           "errors": 0,
           "error_samples": [],
-          "p50_ms": 55.9,
-          "p95_ms": 218.9,
-          "p99_ms": 245.8,
-          "mean_ms": 0.1
+          "p50_ms": 208.5,
+          "p95_ms": 315.7,
+          "p99_ms": 336.0,
+          "mean_ms": 0.2
         },
         "read_memory": {
           "ok": 50,
           "errors": 0,
           "error_samples": [],
-          "p50_ms": 69.7,
-          "p95_ms": 207.1,
-          "p99_ms": 219.0,
-          "mean_ms": 0.1
+          "p50_ms": 207.6,
+          "p95_ms": 424.5,
+          "p99_ms": 426.1,
+          "mean_ms": 0.2
         },
         "search_memories": {
           "ok": 50,
           "errors": 0,
           "error_samples": [],
-          "p50_ms": 35.0,
-          "p95_ms": 202.3,
-          "p99_ms": 239.3,
-          "mean_ms": 0.1
+          "p50_ms": 214.1,
+          "p95_ms": 372.2,
+          "p99_ms": 412.4,
+          "mean_ms": 0.2
         }
       },
-      "wall_s": 0.82,
-      "ok_per_s": 182.99,
+      "wall_s": 1.86,
+      "ok_per_s": 80.48,
       "operations": 150
     }
   }

@@ -1,7 +1,7 @@
 # MaraBrain graph evaluation
 
-Crystalline 0.32.2, MaraBrain over MCP stdio (managed mode), 2026-11-14T23:13:46+0700, on Darwin arm64.
-Corpus write time 3.0 s; embedding wait 0.0 s (141/141 chunks embedded); search modes {'hybrid': 324}.
+Crystalline 0.33.0, MaraBrain over MCP stdio (managed mode), 2026-11-18T23:19:56+0700, on Darwin arm64.
+Corpus write time 6.6 s; embedding wait 0.1 s (141/141 chunks embedded); search modes {'hybrid': 324}.
 
 ## E1 multi-hop recall (budget: at most 5 memories)
 Search top-1 is the service the question names in 0.65 of questions.
@@ -44,20 +44,20 @@ Search top-1 is the service the question names in 0.65 of questions.
 
 | Workers | Tool | OK | Errors | p50 ms | p95 ms | p99 ms | Wall s | OK/s | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | create_memory | 48 | 0 | 15.1 | 16.2 | 16.5 | 0.73 | 65.6 | unresolved links after: 0 |
-| 4 | create_memory | 48 | 0 | 19.1 | 41.3 | 52.3 | 0.3 | 160.26 | unresolved links after: 0 |
-| 8 | create_memory | 48 | 0 | 29.7 | 96.3 | 105.4 | 0.3 | 162.65 | unresolved links after: 0 |
+| 1 | create_memory | 48 | 0 | 26.7 | 28.7 | 30.5 | 1.29 | 37.19 | unresolved links after: 0 |
+| 4 | create_memory | 48 | 0 | 53.1 | 84.2 | 93.8 | 0.69 | 69.55 | unresolved links after: 0 |
+| 8 | create_memory | 48 | 0 | 117.2 | 146.1 | 208.2 | 0.75 | 63.66 | unresolved links after: 0 |
 
 ## S2 mixed read load
 
 | Workers | Tool | OK | Errors | p50 ms | p95 ms | p99 ms | Wall s | OK/s | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 4 | build_memory_context | 50 | 0 | 24.6 | 45.2 | 50.0 | 0.94 | 158.99 |  |
-| 4 | read_memory | 50 | 0 | 16.7 | 37.3 | 58.1 | 0.94 | 158.99 |  |
-| 4 | search_memories | 50 | 0 | 28.6 | 54.8 | 62.4 | 0.94 | 158.99 |  |
-| 8 | build_memory_context | 50 | 0 | 31.1 | 91.0 | 100.2 | 0.8 | 186.47 |  |
-| 8 | read_memory | 50 | 0 | 28.4 | 108.0 | 150.6 | 0.8 | 186.47 |  |
-| 8 | search_memories | 50 | 0 | 44.0 | 108.4 | 128.5 | 0.8 | 186.47 |  |
-| 16 | build_memory_context | 50 | 0 | 55.9 | 218.9 | 245.8 | 0.82 | 182.99 |  |
-| 16 | read_memory | 50 | 0 | 69.7 | 207.1 | 219.0 | 0.82 | 182.99 |  |
-| 16 | search_memories | 50 | 0 | 35.0 | 202.3 | 239.3 | 0.82 | 182.99 |  |
+| 4 | build_memory_context | 50 | 0 | 46.4 | 68.6 | 76.3 | 1.81 | 82.93 |  |
+| 4 | read_memory | 50 | 0 | 44.8 | 62.3 | 71.4 | 1.81 | 82.93 |  |
+| 4 | search_memories | 50 | 0 | 56.1 | 82.0 | 92.1 | 1.81 | 82.93 |  |
+| 8 | build_memory_context | 50 | 0 | 86.7 | 138.5 | 164.1 | 1.52 | 98.76 |  |
+| 8 | read_memory | 50 | 0 | 76.0 | 122.0 | 134.8 | 1.52 | 98.76 |  |
+| 8 | search_memories | 50 | 0 | 81.5 | 132.8 | 148.6 | 1.52 | 98.76 |  |
+| 16 | build_memory_context | 50 | 0 | 208.5 | 315.7 | 336.0 | 1.86 | 80.48 |  |
+| 16 | read_memory | 50 | 0 | 207.6 | 424.5 | 426.1 | 1.86 | 80.48 |  |
+| 16 | search_memories | 50 | 0 | 214.1 | 372.2 | 412.4 | 1.86 | 80.48 |  |

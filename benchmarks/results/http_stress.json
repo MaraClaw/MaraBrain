@@ -1,0 +1,850 @@
+{
+  "engine": "0.33.0",
+  "started": "2026-11-18T23:20:55+0700",
+  "machine": "Darwin arm64",
+  "first_run": {
+    "startup": {
+      "launch_to_health_s": 1.85,
+      "cold_activation_ws-a_s": 0.31,
+      "cold_activation_ws-b_s": 0.24,
+      "cold_activation_ws-c_s": 0.27
+    },
+    "seed": {
+      "memories_per_workspace": 58,
+      "embedding_wait_s": 12.2
+    },
+    "protocol": {
+      "workers_1": {
+        "wall_s": 6.7,
+        "ok": 400,
+        "errors": 0,
+        "ok_per_s": 59.7,
+        "tools": {
+          "health": {
+            "ok": 195,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 24.3,
+            "p95_ms": 43.8,
+            "p99_ms": 56.7,
+            "max_ms": 92.9
+          },
+          "tools/list": {
+            "ok": 205,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 6.3,
+            "p95_ms": 11.0,
+            "p99_ms": 13.6,
+            "max_ms": 23.7
+          }
+        }
+      },
+      "workers_16": {
+        "wall_s": 3.96,
+        "ok": 400,
+        "errors": 0,
+        "ok_per_s": 101.0,
+        "tools": {
+          "health": {
+            "ok": 185,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 245.5,
+            "p95_ms": 313.0,
+            "p99_ms": 343.7,
+            "max_ms": 346.9
+          },
+          "tools/list": {
+            "ok": 215,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 75.7,
+            "p95_ms": 128.5,
+            "p99_ms": 145.6,
+            "max_ms": 153.6
+          }
+        }
+      },
+      "workers_64": {
+        "wall_s": 4.26,
+        "ok": 400,
+        "errors": 0,
+        "ok_per_s": 93.9,
+        "tools": {
+          "health": {
+            "ok": 203,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 1005.8,
+            "p95_ms": 1197.0,
+            "p99_ms": 1272.8,
+            "max_ms": 1273.8
+          },
+          "tools/list": {
+            "ok": 197,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 298.8,
+            "p95_ms": 588.3,
+            "p99_ms": 608.8,
+            "max_ms": 608.8
+          }
+        }
+      }
+    },
+    "writes": {
+      "workers_1": {
+        "wall_s": 1.6,
+        "ok": 60,
+        "errors": 0,
+        "ok_per_s": 37.4,
+        "tools": {
+          "create_memory": {
+            "ok": 60,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 25.0,
+            "p95_ms": 29.7,
+            "p99_ms": 103.9,
+            "max_ms": 103.9
+          }
+        },
+        "receipts": 60,
+        "unique_permalinks": 60,
+        "readable_after": 60
+      },
+      "workers_8": {
+        "wall_s": 3.77,
+        "ok": 240,
+        "errors": 0,
+        "ok_per_s": 63.6,
+        "tools": {
+          "create_memory": {
+            "ok": 240,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 123.6,
+            "p95_ms": 171.1,
+            "p99_ms": 237.4,
+            "max_ms": 259.8
+          }
+        },
+        "receipts": 240,
+        "unique_permalinks": 240,
+        "readable_after": 240
+      },
+      "workers_32": {
+        "wall_s": 7.78,
+        "ok": 480,
+        "errors": 0,
+        "ok_per_s": 61.7,
+        "tools": {
+          "create_memory": {
+            "ok": 480,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 535.9,
+            "p95_ms": 843.5,
+            "p99_ms": 890.7,
+            "max_ms": 1452.0
+          }
+        },
+        "receipts": 480,
+        "unique_permalinks": 480,
+        "readable_after": 480
+      }
+    },
+    "mixed": {
+      "workers_8": {
+        "wall_s": 20.07,
+        "ok": 1800,
+        "errors": 0,
+        "ok_per_s": 89.7,
+        "tools": {
+          "build_memory_context": {
+            "ok": 204,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 78.5,
+            "p95_ms": 160.4,
+            "p99_ms": 195.6,
+            "max_ms": 205.3
+          },
+          "create_memory": {
+            "ok": 159,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 81.6,
+            "p95_ms": 164.1,
+            "p99_ms": 216.9,
+            "max_ms": 228.1
+          },
+          "edit_memory": {
+            "ok": 92,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 75.3,
+            "p95_ms": 135.8,
+            "p99_ms": 162.9,
+            "max_ms": 162.9
+          },
+          "read_memory": {
+            "ok": 375,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 72.9,
+            "p95_ms": 148.6,
+            "p99_ms": 179.0,
+            "max_ms": 205.6
+          },
+          "review_memories": {
+            "ok": 41,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 82.6,
+            "p95_ms": 140.0,
+            "p99_ms": 192.8,
+            "max_ms": 192.8
+          },
+          "search_memories": {
+            "ok": 929,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 83.5,
+            "p95_ms": 163.4,
+            "p99_ms": 201.7,
+            "max_ms": 290.5
+          }
+        },
+        "server_cpu_cores": 1.09,
+        "daemons_cpu_cores": 0.7,
+        "server_rss_peak_mb": 134.5,
+        "daemons_rss_peak_mb": 261.9,
+        "daemons_peak": 3,
+        "transient_cli_peak": 0
+      },
+      "workers_32": {
+        "wall_s": 20.34,
+        "ok": 1789,
+        "errors": 0,
+        "ok_per_s": 88.0,
+        "tools": {
+          "build_memory_context": {
+            "ok": 222,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 292.5,
+            "p95_ms": 1055.0,
+            "p99_ms": 1679.9,
+            "max_ms": 1681.3
+          },
+          "create_memory": {
+            "ok": 176,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 309.9,
+            "p95_ms": 1234.6,
+            "p99_ms": 1637.5,
+            "max_ms": 1665.6
+          },
+          "edit_memory": {
+            "ok": 84,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 256.5,
+            "p95_ms": 1111.8,
+            "p99_ms": 1694.8,
+            "max_ms": 1694.8
+          },
+          "read_memory": {
+            "ok": 362,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 269.6,
+            "p95_ms": 905.2,
+            "p99_ms": 1460.4,
+            "max_ms": 1691.2
+          },
+          "review_memories": {
+            "ok": 62,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 312.4,
+            "p95_ms": 965.2,
+            "p99_ms": 1679.9,
+            "max_ms": 1679.9
+          },
+          "search_memories": {
+            "ok": 883,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 281.0,
+            "p95_ms": 1041.2,
+            "p99_ms": 1541.9,
+            "max_ms": 2779.1
+          }
+        },
+        "server_cpu_cores": 1.1,
+        "daemons_cpu_cores": 0.7,
+        "server_rss_peak_mb": 135.1,
+        "daemons_rss_peak_mb": 285.5,
+        "daemons_peak": 3,
+        "transient_cli_peak": 0
+      },
+      "workers_64": {
+        "wall_s": 20.67,
+        "ok": 1728,
+        "errors": 0,
+        "ok_per_s": 83.6,
+        "tools": {
+          "build_memory_context": {
+            "ok": 202,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 635.9,
+            "p95_ms": 2024.1,
+            "p99_ms": 2775.4,
+            "max_ms": 4620.9
+          },
+          "create_memory": {
+            "ok": 142,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 687.4,
+            "p95_ms": 1691.8,
+            "p99_ms": 2134.1,
+            "max_ms": 2326.9
+          },
+          "edit_memory": {
+            "ok": 71,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 478.3,
+            "p95_ms": 1657.8,
+            "p99_ms": 3815.4,
+            "max_ms": 3815.4
+          },
+          "read_memory": {
+            "ok": 366,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 616.6,
+            "p95_ms": 2058.8,
+            "p99_ms": 3778.3,
+            "max_ms": 5427.5
+          },
+          "review_memories": {
+            "ok": 53,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 500.0,
+            "p95_ms": 2371.0,
+            "p99_ms": 3953.1,
+            "max_ms": 3953.1
+          },
+          "search_memories": {
+            "ok": 894,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 623.8,
+            "p95_ms": 2356.9,
+            "p99_ms": 4663.8,
+            "max_ms": 6180.9
+          }
+        },
+        "server_cpu_cores": 1.1,
+        "daemons_cpu_cores": 0.67,
+        "server_rss_peak_mb": 140.0,
+        "daemons_rss_peak_mb": 294.0,
+        "daemons_peak": 3,
+        "transient_cli_peak": 0
+      }
+    },
+    "contention": {
+      "concurrent_appends": {
+        "wall_s": 1.48,
+        "ok": 48,
+        "errors": 0,
+        "ok_per_s": 32.5,
+        "tools": {
+          "edit_memory": {
+            "ok": 48,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 394.7,
+            "p95_ms": 763.1,
+            "p99_ms": 816.3,
+            "max_ms": 816.3
+          }
+        }
+      },
+      "markers_present_after": 48,
+      "markers_written": 48,
+      "same_title_creates": {
+        "wall_s": 0.53,
+        "ok": 1,
+        "errors": 23,
+        "ok_per_s": 1.9,
+        "tools": {
+          "create_memory": {
+            "ok": 1,
+            "errors": 23,
+            "error_samples": {
+              "Crystalline command failed with exit code 1.": 23
+            },
+            "p50_ms": 92.7,
+            "p95_ms": 92.7,
+            "p99_ms": 92.7,
+            "max_ms": 92.7
+          }
+        }
+      },
+      "same_title_distinct_permalinks": 1
+    },
+    "payloads": {
+      "64KiB": {
+        "create_ok": true,
+        "create_ms": 154.1,
+        "read_ok": true,
+        "read_bytes": 198372,
+        "errors": []
+      },
+      "1024KiB": {
+        "create_ok": true,
+        "create_ms": 389.0,
+        "read_ok": true,
+        "read_bytes": 3181184,
+        "errors": []
+      },
+      "4096KiB": {
+        "create_ok": false,
+        "create_ms": 96.2,
+        "read_ok": false,
+        "read_bytes": 0,
+        "errors": [
+          "MCPError: Server returned an error response"
+        ]
+      }
+    },
+    "overload": {
+      "burst_300_concurrent_connections": {
+        "requests": 300,
+        "outcomes": {
+          "200 tool_ok": 70,
+          "503": 230
+        },
+        "wall_s": 2.28,
+        "ok_p50_ms": 1713.2,
+        "ok_p95_ms": 2222.9
+      },
+      "after": {
+        "wall_s": 11.23,
+        "ok": 20,
+        "errors": 0,
+        "ok_per_s": 1.8,
+        "tools": {
+          "search_memories": {
+            "ok": 20,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 520.9,
+            "p95_ms": 714.8,
+            "p99_ms": 714.8,
+            "max_ms": 714.8
+          }
+        }
+      },
+      "server_alive": true
+    },
+    "hostile": {
+      "good_traffic_16_workers": {
+        "wall_s": 15.77,
+        "ok": 599,
+        "errors": 0,
+        "ok_per_s": 38.0,
+        "tools": {
+          "build_memory_context": {
+            "ok": 70,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 281.1,
+            "p95_ms": 649.5,
+            "p99_ms": 1095.8,
+            "max_ms": 1095.8
+          },
+          "create_memory": {
+            "ok": 56,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 235.2,
+            "p95_ms": 678.9,
+            "p99_ms": 798.5,
+            "max_ms": 798.5
+          },
+          "edit_memory": {
+            "ok": 30,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 255.5,
+            "p95_ms": 539.5,
+            "p99_ms": 847.3,
+            "max_ms": 847.3
+          },
+          "read_memory": {
+            "ok": 124,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 250.3,
+            "p95_ms": 751.6,
+            "p99_ms": 1108.4,
+            "max_ms": 1246.6
+          },
+          "review_memories": {
+            "ok": 6,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 363.6,
+            "p95_ms": 767.7,
+            "p99_ms": 767.7,
+            "max_ms": 767.7
+          },
+          "search_memories": {
+            "ok": 313,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 438.9,
+            "p95_ms": 1002.6,
+            "p99_ms": 1165.3,
+            "max_ms": 1498.1
+          }
+        }
+      },
+      "wrong_token_x2000": {
+        "outcomes": {
+          "401": 2000
+        },
+        "wall_s": 5.48
+      },
+      "wrong_host_x200": {
+        "outcomes": {
+          "421": 200
+        },
+        "wall_s": 0.64
+      }
+    },
+    "aborts": {
+      "requests_aborted_by_client_timeout_50ms": {
+        "ReadTimeout": 292,
+        "503": 28
+      },
+      "transient_cli_right_after": 0,
+      "drain_s": 0.11,
+      "health_after": {
+        "wall_s": 0.21,
+        "ok": 5,
+        "errors": 0,
+        "ok_per_s": 24.0,
+        "tools": {
+          "health": {
+            "ok": 5,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 39.3,
+            "p95_ms": 45.6,
+            "p99_ms": 45.6,
+            "max_ms": 45.6
+          }
+        }
+      }
+    },
+    "soak": {
+      "wall_s": 120.17,
+      "ok": 9172,
+      "errors": 0,
+      "ok_per_s": 76.3,
+      "tools": {
+        "build_memory_context": {
+          "ok": 1129,
+          "errors": 0,
+          "error_samples": {},
+          "p50_ms": 129.5,
+          "p95_ms": 479.4,
+          "p99_ms": 618.3,
+          "max_ms": 1003.2
+        },
+        "create_memory": {
+          "ok": 878,
+          "errors": 0,
+          "error_samples": {},
+          "p50_ms": 144.1,
+          "p95_ms": 491.1,
+          "p99_ms": 750.7,
+          "max_ms": 970.9
+        },
+        "edit_memory": {
+          "ok": 489,
+          "errors": 0,
+          "error_samples": {},
+          "p50_ms": 136.1,
+          "p95_ms": 481.5,
+          "p99_ms": 673.5,
+          "max_ms": 756.9
+        },
+        "read_memory": {
+          "ok": 1818,
+          "errors": 0,
+          "error_samples": {},
+          "p50_ms": 124.2,
+          "p95_ms": 459.0,
+          "p99_ms": 634.1,
+          "max_ms": 1042.9
+        },
+        "review_memories": {
+          "ok": 270,
+          "errors": 0,
+          "error_samples": {},
+          "p50_ms": 149.7,
+          "p95_ms": 510.9,
+          "p99_ms": 721.7,
+          "max_ms": 1057.8
+        },
+        "search_memories": {
+          "ok": 4588,
+          "errors": 0,
+          "error_samples": {},
+          "p50_ms": 169.5,
+          "p95_ms": 599.8,
+          "p99_ms": 843.3,
+          "max_ms": 1837.2
+        }
+      },
+      "windows": [
+        {
+          "window_s": "0-15",
+          "ok_per_s": 51.4,
+          "errors": 0,
+          "p50_ms": 226.5,
+          "p95_ms": 728.5
+        },
+        {
+          "window_s": "15-30",
+          "ok_per_s": 52.9,
+          "errors": 0,
+          "p50_ms": 235.3,
+          "p95_ms": 702.3
+        },
+        {
+          "window_s": "30-45",
+          "ok_per_s": 53.1,
+          "errors": 0,
+          "p50_ms": 244.5,
+          "p95_ms": 647.6
+        },
+        {
+          "window_s": "45-60",
+          "ok_per_s": 79.1,
+          "errors": 0,
+          "p50_ms": 134.2,
+          "p95_ms": 556.1
+        },
+        {
+          "window_s": "60-75",
+          "ok_per_s": 97.7,
+          "errors": 0,
+          "p50_ms": 103.8,
+          "p95_ms": 434.5
+        },
+        {
+          "window_s": "75-90",
+          "ok_per_s": 96.1,
+          "errors": 0,
+          "p50_ms": 111.0,
+          "p95_ms": 440.8
+        },
+        {
+          "window_s": "90-105",
+          "ok_per_s": 93.1,
+          "errors": 0,
+          "p50_ms": 114.9,
+          "p95_ms": 446.2
+        },
+        {
+          "window_s": "105-120",
+          "ok_per_s": 87.1,
+          "errors": 0,
+          "p50_ms": 118.0,
+          "p95_ms": 474.3
+        },
+        {
+          "window_s": "120-135",
+          "ok_per_s": 1.1,
+          "errors": 0,
+          "p50_ms": 215.5,
+          "p95_ms": 695.9
+        }
+      ],
+      "server_rss_start_mb": 147.3,
+      "server_rss_end_mb": 133.2,
+      "open_files_start": 76,
+      "open_files_end": 76,
+      "server_cpu_cores": 1.03,
+      "daemons_cpu_cores": 0.81,
+      "server_rss_peak_mb": 147.5,
+      "daemons_rss_peak_mb": 486.5,
+      "daemons_peak": 3,
+      "transient_cli_peak": 14
+    },
+    "sigterm_under_load": {
+      "exited_within_grace": true,
+      "exit_s": 0.46,
+      "exit_code": 0,
+      "descendants_before": 6,
+      "descendants_surviving_10s": 0,
+      "client_outcomes": {
+        "ok": 265,
+        "errors": 154
+      }
+    }
+  },
+  "second_run": {
+    "startup": {
+      "launch_to_health_s": 1.35
+    },
+    "durability": {
+      "confirmed_before_restart": 2212,
+      "readable_after_restart": 2212,
+      "errors": {
+        "read_memory": {
+          "ok": 2212,
+          "errors": 0,
+          "error_samples": {},
+          "p50_ms": 29.2,
+          "p95_ms": 94.5,
+          "p99_ms": 157.0,
+          "max_ms": 317.9
+        }
+      }
+    },
+    "bounded": {
+      "limits": {
+        "MARABRAIN_MAX_TRANSIENT_PROCESSES": "16",
+        "MARABRAIN_MAX_WORKSPACE_TRANSIENT_PROCESSES": "8",
+        "MARABRAIN_DOMAIN_COMMAND_CAPACITY": "4",
+        "MARABRAIN_MAX_RESIDENT_WORKSPACES": "2"
+      },
+      "wall_s": 20.63,
+      "ok": 1482,
+      "errors": 787,
+      "ok_per_s": 71.8,
+      "tools": {
+        "build_memory_context": {
+          "ok": 191,
+          "errors": 110,
+          "error_samples": {
+            "Resident workspace capacity is busy.": 110
+          },
+          "p50_ms": 712.5,
+          "p95_ms": 3325.6,
+          "p99_ms": 4885.2,
+          "max_ms": 5000.1
+        },
+        "create_memory": {
+          "ok": 109,
+          "errors": 105,
+          "error_samples": {
+            "Resident workspace capacity is busy.": 105
+          },
+          "p50_ms": 663.1,
+          "p95_ms": 2840.2,
+          "p99_ms": 3048.1,
+          "max_ms": 3297.9
+        },
+        "edit_memory": {
+          "ok": 68,
+          "errors": 0,
+          "error_samples": {},
+          "p50_ms": 551.1,
+          "p95_ms": 2442.4,
+          "p99_ms": 3469.8,
+          "max_ms": 3469.8
+        },
+        "read_memory": {
+          "ok": 315,
+          "errors": 167,
+          "error_samples": {
+            "Resident workspace capacity is busy.": 167
+          },
+          "p50_ms": 573.5,
+          "p95_ms": 2559.4,
+          "p99_ms": 4229.0,
+          "max_ms": 6752.1
+        },
+        "review_memories": {
+          "ok": 46,
+          "errors": 24,
+          "error_samples": {
+            "Resident workspace capacity is busy.": 24
+          },
+          "p50_ms": 641.4,
+          "p95_ms": 2575.2,
+          "p99_ms": 2800.3,
+          "max_ms": 2800.3
+        },
+        "search_memories": {
+          "ok": 753,
+          "errors": 381,
+          "error_samples": {
+            "Resident workspace capacity is busy.": 381
+          },
+          "p50_ms": 624.9,
+          "p95_ms": 2779.5,
+          "p99_ms": 3812.4,
+          "max_ms": 6774.9
+        }
+      },
+      "refusals": 787,
+      "refusal_p95_ms": 23.0,
+      "health_after": {
+        "wall_s": 0.23,
+        "ok": 5,
+        "errors": 0,
+        "ok_per_s": 22.1,
+        "tools": {
+          "health": {
+            "ok": 5,
+            "errors": 0,
+            "error_samples": {},
+            "p50_ms": 43.3,
+            "p95_ms": 49.6,
+            "p99_ms": 49.6,
+            "max_ms": 49.6
+          }
+        }
+      },
+      "server_cpu_cores": 1.11,
+      "daemons_cpu_cores": 0.66,
+      "server_rss_peak_mb": 156.4,
+      "daemons_rss_peak_mb": 668.8,
+      "daemons_peak": 2,
+      "transient_cli_peak": 0
+    },
+    "sigterm_idle": {
+      "exited_within_grace": true,
+      "exit_s": 0.36,
+      "exit_code": 0,
+      "descendants_before": 2,
+      "descendants_surviving_10s": 0
+    }
+  },
+  "logs": {
+    "first_run.log": {
+      "tracebacks": 0,
+      "error_lines": 26
+    },
+    "second_run.log": {
+      "tracebacks": 0,
+      "error_lines": 0
+    }
+  }
+}
