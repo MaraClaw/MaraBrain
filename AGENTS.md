@@ -21,7 +21,7 @@ MaraBrain/
 |-- marabrain/             # Runtime package; configuration and server factory
 |-- docs/                  # Python docstring standard
 |-- tests/                 # Automated configuration, MCP transport, and memory-tool tests
-|-- benchmarks/            # Real-engine graph evaluation and load script; results/ holds the last report
+|-- benchmarks/            # Real-engine graph evaluation and live HTTP stress scripts; results/ holds the last reports
 |-- test_health.py         # Client smoke check against an existing HTTP server
 |-- start-from-docker.sh   # Build, validate, and run a foreground container
 |-- docker-entrypoint.sh   # Supervise Crystalline and the MCP server
@@ -48,6 +48,7 @@ MaraBrain/
 | Automated behavior contracts | `tests/test_server.py`, `tests/test_memory_tools.py` | Stdio and HTTP security boundaries; memory tools use a fake `crystalline` on PATH |
 | Live endpoint check | `test_health.py` | Requires an existing server and bearer credential |
 | Graph evaluation and stress | `benchmarks/graph_eval.py` | Needs Crystalline 0.33.0 on PATH; isolated `/tmp` root; not part of pytest |
+| Live HTTP stress and reliability | `benchmarks/http_stress.py` | Launches `python -m marabrain` over HTTP in managed mode; isolated `/tmp` root; `--quick` smoke run; not part of pytest |
 
 ## CODE MAP
 

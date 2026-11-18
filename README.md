@@ -738,3 +738,9 @@ root under `/tmp` so the workspace socket path stays within the macOS limit.
 `uv run --no-sync python benchmarks/graph_eval.py` evaluates graph-assisted recall, supersede
 currentness, review detection, and concurrent store and read load on an isolated engine, and
 writes `benchmarks/results/report.json` and `report.md`.
+`uv run --no-sync python benchmarks/http_stress.py` launches `python -m marabrain` as a separate
+HTTP process with managed engines under an isolated `/tmp` root and drives it only through `/mcp`:
+protocol overhead, concurrent writes, mixed agent load, write contention, large payloads,
+connection overload, wrong-token and wrong-Host floods, client aborts, a soak, SIGTERM under
+load, and a restart with capacity limits and durability checks. It writes
+`benchmarks/results/http_stress.json` and `http_stress.md`; `--quick` shortens it to a smoke run.
