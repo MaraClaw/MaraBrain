@@ -206,18 +206,36 @@ class WorkspaceManager:
             return False
         deadline = anyio.current_time() + self._settings.health_timeout_seconds
         snapshot = tuple(row for row in self._activations.values() if not row.scope.cancel_called)
+        # Probes share the single control slot when transient processes are capped; otherwise they run together under the deadline.
+        limiter = anyio.CapacityLimiter(1 if self._settings.max_transient_processes is not None else max(1, len(snapshot)))
+        healthy = True
+
+        async def probe(activation: _Activation, tasks: TaskGroup) -> None:
+            """Mark the snapshot unhealthy and stop the other probes when one engine fails."""
+            nonlocal healthy
+            async with limiter:
+                await activation.ready.wait()
+                try:
+                    alive = (
+                        activation.error is None
+                        and activation.runtime is not None
+                        and await probe_engine(self._settings.health_timeout_seconds, context=activation.runtime.context, deadline=deadline)
+                    )
+                except TransientLimitError:
+                    alive = False
+            if not alive:
+                healthy = False
+                tasks.cancel_scope.cancel()
+
         for activation in snapshot:
             activation.users += 1
         try:
             with anyio.fail_after(self._settings.health_timeout_seconds):
-                for activation in snapshot:
-                    await activation.ready.wait()
-                    if activation.error is not None or activation.runtime is None:
-                        return False
-                    if not await probe_engine(self._settings.health_timeout_seconds, context=activation.runtime.context, deadline=deadline):
-                        return False
-                return True
-        except TimeoutError, TransientLimitError:
+                async with anyio.create_task_group() as tasks:
+                    for activation in snapshot:
+                        tasks.start_soon(probe, activation, tasks)
+            return healthy
+        except TimeoutError:
             return False
         finally:
             for activation in snapshot:

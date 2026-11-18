@@ -6,7 +6,10 @@ Python MCP server named `marabrain-mcp`, built with FastMCP. The interface conta
 nine tools (`health` plus eight memory tools) and no resources or prompts. `health` takes no arguments and returns
 `{"status": "ok", "version": "0.4.7"}` when every resident workspace's
 [Crystalline](https://github.com/jordiboehme/crystalline) engine answers
-`crystalline ctl status` within one total health probe deadline. With zero resident
+`crystalline ctl status` within one total health probe deadline. Workspaces are probed
+concurrently, so the probe time does not grow with the number of resident workspaces; when
+`MARABRAIN_MAX_TRANSIENT_PROCESSES` is set, probes share its single control slot and run one
+at a time. With zero resident
 workspaces, the service is ready and `health` succeeds without starting an engine.
 Missing executables, failed probes, and probes exceeding that shared deadline produce
 an MCP tool error. Health does not assure embedding-model readiness.
