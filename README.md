@@ -733,8 +733,8 @@ authentication and transport boundaries. No external service credentials are
 needed for the test suite.
 
 `tests/integration` runs the real pinned engine and is excluded by default; run it with
-`uv run --no-sync pytest tests/integration -o addopts="" --basetemp=/tmp/mbit` (a short base
-directory keeps the workspace socket path within the macOS limit).
+`uv run --no-sync pytest tests/integration -o addopts=""`. It creates and removes its own short
+root under `/tmp` so the workspace socket path stays within the macOS limit.
 `uv run --no-sync python benchmarks/graph_eval.py` evaluates graph-assisted recall, supersede
 currentness, review detection, and concurrent store and read load on an isolated engine, and
 writes `benchmarks/results/report.json` and `report.md`.

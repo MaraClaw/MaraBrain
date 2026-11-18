@@ -3,6 +3,8 @@
 import os
 import shutil
 import sys
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Literal
@@ -115,12 +117,20 @@ def payload(result: CallToolResult) -> dict[str, JsonValue]:
     return TypeAdapter(dict[str, JsonValue]).validate_python(result.structured_content)
 
 
+@pytest.fixture
+def short_root() -> Iterator[Path]:
+    """Provide a private root short enough for workspace socket paths on macOS, removed afterwards."""
+    root = Path(tempfile.mkdtemp(prefix="mbit", dir="/tmp")).resolve()
+    yield root
+    shutil.rmtree(root, ignore_errors=True)
+
+
 @pytest.mark.integration
-async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFactory) -> None:
+async def test_real_engine_memory_lifecycle(short_root: Path) -> None:
     """Round-trip a memory through real MCP tools and local embedding search, then stop the daemon."""
     executable = shutil.which("crystalline")
     assert executable is not None, "Install Crystalline 0.32.2 on PATH before running tests/integration."
-    root = tmp_path_factory.getbasetemp().resolve()
+    root = short_root
     environment = {
         "PATH": os.pathsep.join((str(Path(executable).parent), os.defpath)),
         "HOME": str(root / "h"),
