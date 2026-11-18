@@ -47,7 +47,7 @@ MaraBrain/
 | Runtime deployment | `Dockerfile`, `start-from-docker.sh` | Image security and launcher lifecycle are coupled |
 | Automated behavior contracts | `tests/test_server.py`, `tests/test_memory_tools.py` | Stdio and HTTP security boundaries; memory tools use a fake `crystalline` on PATH |
 | Live endpoint check | `test_health.py` | Requires an existing server and bearer credential |
-| Graph evaluation and stress | `benchmarks/graph_eval.py` | Needs Crystalline 0.32.2 on PATH; isolated `/tmp` root; not part of pytest |
+| Graph evaluation and stress | `benchmarks/graph_eval.py` | Needs Crystalline 0.33.0 on PATH; isolated `/tmp` root; not part of pytest |
 
 ## CODE MAP
 

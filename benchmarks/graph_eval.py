@@ -1,6 +1,6 @@
 """Evaluate and stress MaraBrain's graph-aware memory tools against a real, isolated Crystalline engine.
 
-Run from the repository root with Crystalline 0.32.2 on PATH:
+Run from the repository root with Crystalline 0.33.0 on PATH:
 
     uv run --no-sync python benchmarks/graph_eval.py --output benchmarks/results
 
@@ -540,7 +540,7 @@ async def main(output: Path, keep: bool, store_levels: list[int], read_levels: l
     """Prepare an isolated engine, run every evaluation, and write the reports."""
     executable = shutil.which("crystalline")
     if executable is None:
-        raise SystemExit("Install Crystalline 0.32.2 on PATH first.")
+        raise SystemExit("Install Crystalline 0.33.0 on PATH first.")
     root = Path(tempfile.mkdtemp(prefix="mbb", dir="/tmp")).resolve()
     environment = {
         "PATH": os.pathsep.join((str(Path(executable).parent), os.defpath)),
