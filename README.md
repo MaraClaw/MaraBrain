@@ -400,13 +400,13 @@ or empty residency preserves existing unbounded behavior in either engine mode;
 a configured cap requires `MARABRAIN_ENGINE_MODE=managed`.
 
 `MARABRAIN_DOMAIN_COMMAND_CAPACITY` adds admission per workspace and resolved domain for the final create,
-read, edit, delete, and search commands. For example, export
+read, edit, delete, search, context, review, and vocabulary commands. For example, export
 `MARABRAIN_DOMAIN_COMMAND_CAPACITY=2` to give every resolved domain in each workspace
 its own capacity of two commands. Aliases and case variants within a workspace share
 their resolved domain's capacity. The same domain name in another workspace has
 independent counters.
-A search reserves one permit per distinct resolved domain atomically; if any domain
-is full, the whole search fails immediately without launching its final command.
+A search, context, or review command reserves one permit per distinct resolved domain atomically;
+if any domain is full, the whole command fails immediately without launching it.
 
 Domain capacities do not enlarge or replace the global data and reserved control
 lanes. Registry synchronization and registration remain outside domain quotas;
