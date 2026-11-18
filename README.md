@@ -19,7 +19,7 @@ The other eight tools manage memories through the Crystalline CLI; see [Memory t
 
 The tools run the pinned Crystalline 0.32.2 `crystalline --json` command without a shell,
 send content on stdin, and return its JSON object unchanged (native fields, no added keys)
-unless `read_memory` is called with `compress=true`, as described below.
+unless `read_memory` is called with `compress=true` or under a domain allowlist, as described below.
 All eight memory tools require `workspace_id`: a strict, case-sensitive ASCII string
 of 1-64 characters matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. There is no default,
 normalization, or adoption of legacy data. For example, `Team_A` and `team_a` are
@@ -158,9 +158,12 @@ is a relation: a type followed by a link to a target title. Quote a multi-word t
 `- "relates to" [[Rollout plan]]`; an unquoted `- see also [[Rollout plan]]` becomes a plain link, not
 a relation. A target resolves by title within the memory's own domain, and `[[other-domain:Title]]`
 crosses into another domain. Unresolved targets are kept and flagged `resolved: false` in
-`read_memory`. That response also lists `inbound.refs`, the memories that link to the one read. They can
-name engrams in other domains, including domains the allowlist denies, because admission does not
-redact linked metadata.
+`read_memory`. That response also lists `inbound.refs`, the memories that link to the one read, which can
+come from other domains. When `MARABRAIN_ALLOWED_DOMAINS` is set, `read_memory` removes every reference
+whose domain is outside the allowlist. Crystalline lists at most five references, so a hidden one could
+be denied: under an allowlist `inbound.count` is the number of references still listed, and the
+`related` neighbourhood hint is removed when neither a listed reference nor a resolved outbound relation
+or link remains. Without an allowlist the response is unchanged.
 
 `build_memory_context(workspace_id, domain, permalink, domains=null, depth=null, max_related=null, timeframe=null)`
 returns the neighbourhood of one memory as native JSON without any memory content:
@@ -330,7 +333,8 @@ Rotate the credential by updating both the server and backend and restarting the
 Within each workspace, domain admission checks both the supplied and resolved exact top-level names before mutations;
 normalization never widens an allowlist. For a new mixed-case input, permit both that spelling
 and its lowercase name, or use the lowercase spelling directly. Admission does not isolate files,
-resolve aliases, redact linked metadata, or authorize workspace membership. A mixed allowed and denied search is
+resolve aliases, or authorize workspace membership; under an allowlist, `read_memory` removes inbound
+references from denied domains (see [Knowledge graph](#knowledge-graph)). A mixed allowed and denied search is
 rejected in full. Docker's independent healthcheck has a three-second HTTP timeout
 and five-second outer timeout regardless of the health probe deadline; client
 timeouts and HTTP shutdown grace are separate limits too.

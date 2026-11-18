@@ -26,7 +26,8 @@ description: >-
    not mean an empty memory or prove absence. A pre-read is not an atomic guard
    against concurrent changes and provides no checksum protection for deletion.
    The read's `inbound` shows the memories that link to the target; deleting
-   leaves them with dangling links.
+   leaves them with dangling links. Under a domain allowlist it lists only
+   linking memories in permitted domains, so an empty list does not prove none exist.
 4. Call `delete_memory` once with only `workspace_id`, domain, and permalink. It is permanent
    and has no tool-level confirmation, checksum, or force argument.
 5. Report deletion only after a successful native result. If the request times

@@ -10,7 +10,7 @@ from typing import assert_never
 import anyio
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
+from pydantic import BaseModel, ConfigDict, JsonValue, StrictStr, ValidationError
 
 from marabrain.compression import compress_memory
 from marabrain.compression_cache import CompressionCache
@@ -96,6 +96,24 @@ def _purge_on_dispatch(cache: CompressionCache | None, workspace_id: str, domain
     return None if cache is None else partial(cache.purge, domain, permalink, workspace_id=workspace_id)
 
 
+def _redact_inbound(result: JsonObject, policy: frozenset[str] | None) -> JsonObject:
+    """Drop inbound references from domains outside the allowlist so a read reveals nothing about them.
+
+    Crystalline caps the listed references, so a hidden one may be denied; the count is reduced to the
+    references that remain, and the neighbourhood hint is dropped when no visible edge is left.
+    """
+    inbound = result.get("inbound")
+    if policy is None or not isinstance(inbound, dict):
+        return result
+    refs = inbound.get("refs")
+    kept: list[JsonValue] = [ref for ref in refs if isinstance(ref, dict) and ref.get("domain") in policy] if isinstance(refs, list) else []
+    redacted: JsonObject = {**result, "inbound": {**inbound, "refs": kept, "count": len(kept)}}
+    outbound = [edge for key in ("relations", "links") if isinstance(edges := result.get(key), list) for edge in edges]
+    if not kept and not any(isinstance(edge, dict) and edge.get("resolved") is True for edge in outbound):
+        redacted.pop("related", None)
+    return redacted
+
+
 def register_memory_tools(
     server: FastMCP,
     manager: WorkspaceManager,
@@ -105,6 +123,7 @@ def register_memory_tools(
     operation_timeout_seconds: float | None = None,
     compression_cache: CompressionCache | None = None,
     max_input_bytes: int | None = None,
+    allowed_domains: frozenset[str] | None = None,
 ) -> None:
     """Register the eight memory tools bound to the application's workspace manager and its lifespan."""
 
@@ -147,6 +166,7 @@ def register_memory_tools(
         With compress=true, query is required and full content is sent to the configured LLM.
         The returned content is generated context marked compressed=true; checksum still identifies the original document.
         Compression errors fail the tool. Default reads return native JSON without contacting an LLM.
+        Under a domain allowlist, inbound references from domains outside it are removed.
         """
         if compress and query is None:
             raise ToolError("A query is required when read compression is enabled.")
@@ -155,8 +175,11 @@ def register_memory_tools(
         async with manager.lease(workspace_id, deadline=deadline) as runtime:
             (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
             with runtime.admission.admit([resolved]):
-                result = await run_json(
-                    ["read", permalink, f"--domain={resolved}"], timeout_seconds=command_timeout_seconds, context=runtime.context, deadline=deadline
+                result = _redact_inbound(
+                    await run_json(
+                        ["read", permalink, f"--domain={resolved}"], timeout_seconds=command_timeout_seconds, context=runtime.context, deadline=deadline
+                    ),
+                    allowed_domains,
                 )
         if compress and query is not None:
             settings = llm_settings if llm_settings is not None else LLMSettings()

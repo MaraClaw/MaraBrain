@@ -288,6 +288,38 @@ async def test_denied_domains_never_execute(cli: Path, tool: str, arguments: dic
     assert calls(cli) == []
 
 
+def ref(domain: str) -> dict[str, object]:
+    """Build one native inbound reference from the given domain."""
+    return {"domain": domain, "kind": "relation", "path": f"{domain}.md"}
+
+
+HINT = "build_context anchor crystalline://notes/team/plan to explore linked knowledge"
+
+
+BOTH = [ref("notes"), ref("secret")]
+
+
+@pytest.mark.parametrize(
+    "policy,refs,edges,inbound,hinted",
+    [
+        pytest.param(None, BOTH, {}, {"count": 7, "refs": BOTH}, True, id="unrestricted-unchanged"),
+        pytest.param(("notes",), BOTH, {}, {"count": 1, "refs": [ref("notes")]}, True, id="denied-refs-dropped"),
+        pytest.param(("notes",), [ref("secret")], {}, {"count": 0, "refs": []}, False, id="only-denied-drops-hint"),
+        pytest.param(("notes",), [ref("secret")], {"links": [{"resolved": True}]}, {"count": 0, "refs": []}, True, id="resolved-outbound-keeps-hint"),
+    ],
+)
+async def test_read_redacts_inbound_references_outside_the_allowlist(
+    cli: Path, policy: tuple[str, ...] | None, refs: list[dict[str, object]], edges: dict[str, object], inbound: dict[str, object], hinted: bool
+) -> None:
+    """Remove denied linking domains, their share of the capped count, and an edge hint that only they justify."""
+    payload = {"checksum": "c", "content": "body", **edges, "inbound": {"count": 7, "refs": refs}, "related": HINT}
+    respond(cli, stdout=json.dumps(payload))
+    async with Client(create_server(Settings(allowed_domains=policy))) as client:
+        result = (await client.call_tool("read_memory", TARGET)).structured_content
+    expected = {key: value for key, value in {**payload, "inbound": inbound}.items() if hinted or key != "related"}
+    assert result == expected
+
+
 @pytest.mark.parametrize(
     "tool,arguments", [pytest.param("read_memory", TARGET, id="read"), pytest.param("create_memory", {**NOTE, "content": ""}, id="empty-body")]
 )

@@ -112,6 +112,7 @@ def create_server(settings: Settings, *, context: EngineContext | None = None, _
         operation_timeout_seconds=settings.operation_timeout_seconds,
         compression_cache=cache,
         max_input_bytes=settings.max_input_bytes,
+        allowed_domains=None if settings.allowed_domains is None else frozenset(settings.allowed_domains),
     )
     return server
 
