@@ -19,7 +19,7 @@ from marabrain.transient import StdoutCapture, TransientLimitError
 JsonObject = dict[str, JsonValue]
 _OUTPUT = TypeAdapter(JsonObject)
 _LOGGER = logging.getLogger(__name__)
-_OPERATIONS = frozenset({"write", "read", "edit", "delete", "search"})
+_OPERATIONS = frozenset({"write", "read", "edit", "delete", "search", "context", "evolve", "vocabulary"})
 
 
 async def _run_command(

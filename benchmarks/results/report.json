@@ -1,0 +1,229 @@
+{
+  "engine": "0.33.0",
+  "started": "2026-11-18T23:19:56+0700",
+  "machine": "Darwin arm64",
+  "setup": {
+    "corpus_write_s": 6.6,
+    "embedding_wait_s": 0.1,
+    "embedded_chunks": 141,
+    "total_chunks": 141,
+    "search_modes": {
+      "hybrid": 324
+    }
+  },
+  "E1_multi_hop": {
+    "questions": 80,
+    "search_top1_is_the_named_service": 0.65,
+    "arms": {
+      "search_top5": {
+        "recall": 0.412,
+        "mean_calls": 1.0,
+        "mean_retrieved": 5.0
+      },
+      "search_top1_context": {
+        "recall": 0.7,
+        "mean_calls": 2.0,
+        "mean_retrieved": 3.7
+      },
+      "search_top1_read_follow": {
+        "recall": 0.7,
+        "mean_calls": 3.3,
+        "mean_retrieved": 2.3
+      }
+    },
+    "recall_by_kind": {
+      "search_top1_context/oncall": 0.675,
+      "search_top1_context/version": 0.725,
+      "search_top1_read_follow/oncall": 0.675,
+      "search_top1_read_follow/version": 0.725,
+      "search_top5/oncall": 0.35,
+      "search_top5/version": 0.475
+    }
+  },
+  "E2_currentness": {
+    "facts": 20,
+    "arms": {
+      "no_lifecycle": {
+        "top1_current_rate": 0.6,
+        "stale_in_top3_rate": 1.0
+      },
+      "superseded_ranking_only": {
+        "top1_current_rate": 1.0,
+        "stale_in_top3_rate": 0.0
+      },
+      "superseded_status_stable": {
+        "top1_current_rate": 1.0,
+        "stale_in_top3_rate": 0.0
+      }
+    }
+  },
+  "E3_integrity": {
+    "injected_each": 10,
+    "dangling_link_recall_V102": 1.0,
+    "retired_reference_recall_V101": 1.0,
+    "clean_false_positives_V101_V102": 0,
+    "findings_total": 30,
+    "flagged_memories_by_rule": {
+      "V101": 10,
+      "V102": 10,
+      "V301": 8
+    }
+  },
+  "S1_store": {
+    "workers_1": {
+      "tools": {
+        "create_memory": {
+          "ok": 48,
+          "errors": 0,
+          "error_samples": [],
+          "p50_ms": 26.7,
+          "p95_ms": 28.7,
+          "p99_ms": 30.5,
+          "mean_ms": 0.0
+        }
+      },
+      "wall_s": 1.29,
+      "ok_per_s": 37.19,
+      "operations": 48,
+      "unresolved_links_after": 0
+    },
+    "workers_4": {
+      "tools": {
+        "create_memory": {
+          "ok": 48,
+          "errors": 0,
+          "error_samples": [],
+          "p50_ms": 53.1,
+          "p95_ms": 84.2,
+          "p99_ms": 93.8,
+          "mean_ms": 0.1
+        }
+      },
+      "wall_s": 0.69,
+      "ok_per_s": 69.55,
+      "operations": 48,
+      "unresolved_links_after": 0
+    },
+    "workers_8": {
+      "tools": {
+        "create_memory": {
+          "ok": 48,
+          "errors": 0,
+          "error_samples": [],
+          "p50_ms": 117.2,
+          "p95_ms": 146.1,
+          "p99_ms": 208.2,
+          "mean_ms": 0.1
+        }
+      },
+      "wall_s": 0.75,
+      "ok_per_s": 63.66,
+      "operations": 48,
+      "unresolved_links_after": 0
+    }
+  },
+  "S2_mixed_read": {
+    "workers_4": {
+      "tools": {
+        "build_memory_context": {
+          "ok": 50,
+          "errors": 0,
+          "error_samples": [],
+          "p50_ms": 46.4,
+          "p95_ms": 68.6,
+          "p99_ms": 76.3,
+          "mean_ms": 0.0
+        },
+        "read_memory": {
+          "ok": 50,
+          "errors": 0,
+          "error_samples": [],
+          "p50_ms": 44.8,
+          "p95_ms": 62.3,
+          "p99_ms": 71.4,
+          "mean_ms": 0.0
+        },
+        "search_memories": {
+          "ok": 50,
+          "errors": 0,
+          "error_samples": [],
+          "p50_ms": 56.1,
+          "p95_ms": 82.0,
+          "p99_ms": 92.1,
+          "mean_ms": 0.1
+        }
+      },
+      "wall_s": 1.81,
+      "ok_per_s": 82.93,
+      "operations": 150
+    },
+    "workers_8": {
+      "tools": {
+        "build_memory_context": {
+          "ok": 50,
+          "errors": 0,
+          "error_samples": [],
+          "p50_ms": 86.7,
+          "p95_ms": 138.5,
+          "p99_ms": 164.1,
+          "mean_ms": 0.1
+        },
+        "read_memory": {
+          "ok": 50,
+          "errors": 0,
+          "error_samples": [],
+          "p50_ms": 76.0,
+          "p95_ms": 122.0,
+          "p99_ms": 134.8,
+          "mean_ms": 0.1
+        },
+        "search_memories": {
+          "ok": 50,
+          "errors": 0,
+          "error_samples": [],
+          "p50_ms": 81.5,
+          "p95_ms": 132.8,
+          "p99_ms": 148.6,
+          "mean_ms": 0.1
+        }
+      },
+      "wall_s": 1.52,
+      "ok_per_s": 98.76,
+      "operations": 150
+    },
+    "workers_16": {
+      "tools": {
+        "build_memory_context": {
+          "ok": 50,
+          "errors": 0,
+          "error_samples": [],
+          "p50_ms": 208.5,
+          "p95_ms": 315.7,
+          "p99_ms": 336.0,
+          "mean_ms": 0.2
+        },
+        "read_memory": {
+          "ok": 50,
+          "errors": 0,
+          "error_samples": [],
+          "p50_ms": 207.6,
+          "p95_ms": 424.5,
+          "p99_ms": 426.1,
+          "mean_ms": 0.2
+        },
+        "search_memories": {
+          "ok": 50,
+          "errors": 0,
+          "error_samples": [],
+          "p50_ms": 214.1,
+          "p95_ms": 372.2,
+          "p99_ms": 412.4,
+          "mean_ms": 0.2
+        }
+      },
+      "wall_s": 1.86,
+      "ok_per_s": 80.48,
+      "operations": 150
+    }
+  }
+}

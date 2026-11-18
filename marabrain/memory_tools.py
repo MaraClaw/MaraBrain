@@ -1,4 +1,4 @@
-"""MCP tools that create, read, edit, delete, and search memories through Crystalline."""
+"""MCP tools that create, read, edit, delete, search, and traverse memories through Crystalline."""
 
 import json
 import logging
@@ -10,7 +10,7 @@ from typing import assert_never
 import anyio
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
+from pydantic import BaseModel, ConfigDict, JsonValue, StrictStr, ValidationError
 
 from marabrain.compression import compress_memory
 from marabrain.compression_cache import CompressionCache
@@ -22,20 +22,26 @@ from marabrain.models import (
     Checksum,
     Content,
     Domain,
+    Depth,
     Domains,
     EditOperation,
+    Families,
     FindReplaceEdit,
     Folder,
     InsertAfterSectionEdit,
     InsertBeforeSectionEdit,
     Limit,
+    MaxRelated,
     Metadata,
     Page,
     Permalink,
     PrependEdit,
     Query,
     ReplaceSectionEdit,
+    SetFrontmatterEdit,
+    Status,
     Tags,
+    Timeframe,
     Title,
     WorkspaceId,
 )
@@ -70,6 +76,10 @@ def _edit_arguments(operation: EditOperation) -> list[str]:
             return ["insert_before_section", f"--section={section}"]
         case InsertAfterSectionEdit(section=section):
             return ["insert_after_section", f"--section={section}"]
+        case SetFrontmatterEdit(key=key, value=value, values=values):
+            if key in {"tags", "sources"}:
+                return ["set_frontmatter", f"--key={key}", f"--values={','.join(values)}" if values else "--values"]
+            return ["set_frontmatter", f"--key={key}", *([] if value is None else [f"--value={value}"])]
     assert_never(operation)
 
 
@@ -86,6 +96,24 @@ def _purge_on_dispatch(cache: CompressionCache | None, workspace_id: str, domain
     return None if cache is None else partial(cache.purge, domain, permalink, workspace_id=workspace_id)
 
 
+def _redact_inbound(result: JsonObject, policy: frozenset[str] | None) -> JsonObject:
+    """Drop inbound references from domains outside the allowlist so a read reveals nothing about them.
+
+    Crystalline caps the listed references, so a hidden one may be denied; the count is reduced to the
+    references that remain, and the neighbourhood hint is dropped when no visible edge is left.
+    """
+    inbound = result.get("inbound")
+    if policy is None or not isinstance(inbound, dict):
+        return result
+    refs = inbound.get("refs")
+    kept: list[JsonValue] = [ref for ref in refs if isinstance(ref, dict) and ref.get("domain") in policy] if isinstance(refs, list) else []
+    redacted: JsonObject = {**result, "inbound": {**inbound, "refs": kept, "count": len(kept)}}
+    outbound = [edge for key in ("relations", "links") if isinstance(edges := result.get(key), list) for edge in edges]
+    if not kept and not any(isinstance(edge, dict) and edge.get("resolved") is True for edge in outbound):
+        redacted.pop("related", None)
+    return redacted
+
+
 def register_memory_tools(
     server: FastMCP,
     manager: WorkspaceManager,
@@ -95,8 +123,9 @@ def register_memory_tools(
     operation_timeout_seconds: float | None = None,
     compression_cache: CompressionCache | None = None,
     max_input_bytes: int | None = None,
+    allowed_domains: frozenset[str] | None = None,
 ) -> None:
-    """Register five memory tools bound to the application's workspace manager and its lifespan."""
+    """Register the eight memory tools bound to the application's workspace manager and its lifespan."""
 
     @server.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
     async def create_memory(
@@ -108,7 +137,13 @@ def register_memory_tools(
         folder: Folder | None = None,
         metadata: Metadata | None = None,
     ) -> JsonObject:
-        """Create a new Markdown memory in a domain; an existing memory is never overwritten. Returns Crystalline's receipt, including its permalink."""
+        """Create a new Markdown memory in a domain; an existing memory is never overwritten. Returns Crystalline's receipt, including its permalink.
+
+        Write the body as a lead-in sentence plus bullets: `- [category] fact #tag` is an observation and
+        `- rel_type [[Target Title]]` is a graph relation (quote a multi-word type: `- "relates to" [[Target]]`).
+        A bare target resolves by title within the same domain; write `[[other-domain:Target Title]]` to cross domains.
+        Relations make the memory reachable from its neighbours through build_memory_context.
+        """
         _check_input_size("write", content, max_input_bytes)
         deadline = deadline_after(operation_timeout_seconds)
         manager.admit([domain])
@@ -131,6 +166,7 @@ def register_memory_tools(
         With compress=true, query is required and full content is sent to the configured LLM.
         The returned content is generated context marked compressed=true; checksum still identifies the original document.
         Compression errors fail the tool. Default reads return native JSON without contacting an LLM.
+        Under a domain allowlist, inbound references from domains outside it are removed.
         """
         if compress and query is None:
             raise ToolError("A query is required when read compression is enabled.")
@@ -139,8 +175,11 @@ def register_memory_tools(
         async with manager.lease(workspace_id, deadline=deadline) as runtime:
             (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
             with runtime.admission.admit([resolved]):
-                result = await run_json(
-                    ["read", permalink, f"--domain={resolved}"], timeout_seconds=command_timeout_seconds, context=runtime.context, deadline=deadline
+                result = _redact_inbound(
+                    await run_json(
+                        ["read", permalink, f"--domain={resolved}"], timeout_seconds=command_timeout_seconds, context=runtime.context, deadline=deadline
+                    ),
+                    allowed_domains,
                 )
         if compress and query is not None:
             settings = llm_settings if llm_settings is not None else LLMSettings()
@@ -181,8 +220,15 @@ def register_memory_tools(
     async def edit_memory(
         workspace_id: WorkspaceId, domain: Domain, permalink: Permalink, operation: EditOperation, expected_checksum: Checksum | None = None
     ) -> JsonObject:
-        """Edit an existing memory with one operation; expected_checksum from read_memory refuses the edit if the memory changed since."""
-        _check_input_size("edit", operation.content, max_input_bytes)
+        """Edit an existing memory with one operation; expected_checksum from read_memory refuses the edit if the memory changed since.
+
+        set_frontmatter assigns lifecycle fields without touching the body. To retire a fact that a newer memory replaces,
+        set status to superseded, append a `- superseded_by [[New Title]]` relation, and optionally set valid_to;
+        retired memories fade in search ranking and search_memories(status="stable") excludes them.
+        """
+        content = None if isinstance(operation, SetFrontmatterEdit) else operation.content
+        if content is not None:
+            _check_input_size("edit", content, max_input_bytes)
         deadline = deadline_after(operation_timeout_seconds)
         manager.admit([domain])
         checksum = [] if expected_checksum is None else [f"--expected-checksum={expected_checksum}"]
@@ -192,7 +238,7 @@ def register_memory_tools(
             with runtime.admission.admit([resolved]):
                 return await run_json(
                     ["edit", permalink, resolved, name, *flags, *checksum],
-                    operation.content,
+                    content,
                     command_timeout_seconds,
                     context=runtime.context,
                     deadline=deadline,
@@ -217,18 +263,96 @@ def register_memory_tools(
 
     @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False})
     async def search_memories(
-        workspace_id: WorkspaceId, query: Query, domains: Domains, tags: Tags | None = None, limit: Limit = 10, page: Page = 1
+        workspace_id: WorkspaceId,
+        query: Query,
+        domains: Domains,
+        tags: Tags | None = None,
+        limit: Limit = 10,
+        page: Page = 1,
+        status: Status | None = None,
     ) -> JsonObject:
-        """Search memories in one or more domains for nonempty query text, optionally narrowed by tags. Hits give the domain and permalink for read_memory."""
+        """Search memories in one or more domains for nonempty query text, optionally narrowed by tags and one status.
+
+        Hits give the domain and permalink for read_memory. Pass status="stable" for what is true now; it also matches legacy "current".
+        """
         deadline = deadline_after(operation_timeout_seconds)
         manager.admit(domains)
         async with manager.lease(workspace_id, deadline=deadline) as runtime:
             resolved = await runtime.registry.resolve(domains, deadline=deadline)
-            filters = [*(f"--domain={domain}" for domain in resolved), *(f"--tag={tag}" for tag in tags or [])]
+            filters = [
+                *(f"--domain={domain}" for domain in resolved),
+                *(f"--tag={tag}" for tag in tags or []),
+                *([] if status is None else [f"--status={status}"]),
+            ]
             with runtime.admission.admit(resolved):
                 return await run_json(
                     ["search", *filters, f"--limit={limit}", f"--page={page}", query],
                     timeout_seconds=command_timeout_seconds,
                     context=runtime.context,
                     deadline=deadline,
+                )
+
+    @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False})
+    async def build_memory_context(
+        workspace_id: WorkspaceId,
+        domain: Domain,
+        permalink: Permalink,
+        domains: Domains | None = None,
+        depth: Depth | None = None,
+        max_related: MaxRelated | None = None,
+        timeframe: Timeframe | None = None,
+    ) -> JsonObject:
+        """Return the graph neighbourhood around one memory: nodes (domain, permalink, title, type) and typed edges, without content.
+
+        Traversal follows relations and links in both directions, ranked by connection strength, and stays within the anchor's
+        domain plus any extra domains listed. Read the nodes you need with read_memory. Depth defaults to 1 hop, at most 3.
+        """
+        deadline = deadline_after(operation_timeout_seconds)
+        requested: list[str] = list(dict.fromkeys([domain, *(domains or [])]))
+        manager.admit(requested)
+        options = [
+            *([] if depth is None else [f"--depth={depth}"]),
+            *([] if max_related is None else [f"--max-related={max_related}"]),
+            *([] if timeframe is None else [f"--timeframe={timeframe}"]),
+        ]
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            resolved = list(dict.fromkeys(await runtime.registry.resolve(requested, deadline=deadline)))
+            with runtime.admission.admit(resolved):
+                return await run_json(
+                    ["context", f"crystalline://{resolved[0]}/{permalink}", *(f"--domain={name}" for name in resolved), *options],
+                    timeout_seconds=command_timeout_seconds,
+                    context=runtime.context,
+                    deadline=deadline,
+                )
+
+    @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False})
+    async def review_memories(workspace_id: WorkspaceId, domains: Domains, families: Families | None = None, limit: Limit = 10, page: Page = 1) -> JsonObject:
+        """Sweep domains read-only for the maintenance their memories need and return Crystalline's ranked queue.
+
+        Findings include unresolved links, current memories that still reference retired ones, retirements without a successor,
+        expired validity, orphans, and near-duplicates, each with evidence and a suggested fix. The sweep changes nothing.
+        """
+        deadline = deadline_after(operation_timeout_seconds)
+        manager.admit(domains)
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            resolved = list(dict.fromkeys(await runtime.registry.resolve(domains, deadline=deadline)))
+            filters = [*(f"--domain={name}" for name in resolved), *(f"--family={family}" for family in families or [])]
+            with runtime.admission.admit(resolved):
+                return await run_json(
+                    ["evolve", *filters, f"--limit={limit}", f"--page={page}"],
+                    timeout_seconds=command_timeout_seconds,
+                    context=runtime.context,
+                    deadline=deadline,
+                )
+
+    @server.tool(annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False})
+    async def get_memory_vocabulary(workspace_id: WorkspaceId, domain: Domain) -> JsonObject:
+        """List the tags, observation categories, relation types, types, and statuses a domain uses, with counts; reuse them before coining new terms."""
+        deadline = deadline_after(operation_timeout_seconds)
+        manager.admit([domain])
+        async with manager.lease(workspace_id, deadline=deadline) as runtime:
+            (resolved,) = await runtime.registry.resolve([domain], deadline=deadline)
+            with runtime.admission.admit([resolved]):
+                return await run_json(
+                    ["vocabulary", f"--domain={resolved}"], timeout_seconds=command_timeout_seconds, context=runtime.context, deadline=deadline
                 )

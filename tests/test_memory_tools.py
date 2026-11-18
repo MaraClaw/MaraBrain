@@ -98,6 +98,48 @@ OPERATIONS = [
         "x",
         id="insert-after",
     ),
+    pytest.param(
+        "edit_memory",
+        edit({"type": "set_frontmatter", "key": "status", "value": "superseded"}, expected_checksum="abc123"),
+        ["edit", "team/plan", "notes", "set_frontmatter", "--key=status", "--value=superseded", "--expected-checksum=abc123"],
+        "",
+        id="frontmatter-status",
+    ),
+    pytest.param(
+        "edit_memory",
+        edit({"type": "set_frontmatter", "key": "valid_to", "value": "2026-02-28"}),
+        ["edit", "team/plan", "notes", "set_frontmatter", "--key=valid_to", "--value=2026-02-28"],
+        "",
+        id="frontmatter-date",
+    ),
+    pytest.param(
+        "edit_memory",
+        edit({"type": "set_frontmatter", "key": "salience", "value": "7.5"}),
+        ["edit", "team/plan", "notes", "set_frontmatter", "--key=salience", "--value=7.5"],
+        "",
+        id="frontmatter-salience",
+    ),
+    pytest.param(
+        "edit_memory",
+        edit({"type": "set_frontmatter", "key": "verified"}),
+        ["edit", "team/plan", "notes", "set_frontmatter", "--key=verified"],
+        "",
+        id="frontmatter-stamp-or-remove",
+    ),
+    pytest.param(
+        "edit_memory",
+        edit({"type": "set_frontmatter", "key": "tags", "values": ["infra", "a b"]}),
+        ["edit", "team/plan", "notes", "set_frontmatter", "--key=tags", "--values=infra,a b"],
+        "",
+        id="frontmatter-list",
+    ),
+    pytest.param(
+        "edit_memory",
+        edit({"type": "set_frontmatter", "key": "sources", "values": []}),
+        ["edit", "team/plan", "notes", "set_frontmatter", "--key=sources", "--values"],
+        "",
+        id="frontmatter-list-remove",
+    ),
 ]
 
 
@@ -136,6 +178,17 @@ INVALID = [
     pytest.param("edit_memory", edit({"type": "append", "content": "x", "section": "Plan"}), id="append-extra-field"),
     pytest.param("edit_memory", edit({"type": "append", "content": "a\x00b"}), id="edit-content-nul"),
     pytest.param("edit_memory", edit({"type": "append", "content": "x"}, expected_checksum="bad checksum"), id="checksum-space"),
+    pytest.param("edit_memory", edit({"type": "set_frontmatter", "key": "title", "value": "x"}), id="frontmatter-unknown-key"),
+    pytest.param("edit_memory", edit({"type": "set_frontmatter", "key": "status", "value": "x", "content": "y"}), id="frontmatter-content"),
+    pytest.param("edit_memory", edit({"type": "set_frontmatter", "key": "status", "values": ["x"]}), id="frontmatter-values-on-scalar"),
+    pytest.param("edit_memory", edit({"type": "set_frontmatter", "key": "tags", "value": "x"}), id="frontmatter-value-on-list"),
+    pytest.param("edit_memory", edit({"type": "set_frontmatter", "key": "tags", "values": ["a,b"]}), id="frontmatter-comma"),
+    pytest.param("edit_memory", edit({"type": "set_frontmatter", "key": "valid_to", "value": "2026-02-30"}), id="frontmatter-impossible-date"),
+    pytest.param("edit_memory", edit({"type": "set_frontmatter", "key": "valid_from", "value": "next week"}), id="frontmatter-prose-date"),
+    pytest.param("edit_memory", edit({"type": "set_frontmatter", "key": "salience", "value": "11"}), id="frontmatter-salience-range"),
+    pytest.param("edit_memory", edit({"type": "set_frontmatter", "key": "salience", "value": "high"}), id="frontmatter-salience-text"),
+    pytest.param("edit_memory", edit({"type": "set_frontmatter", "key": "status", "value": "-x"}), id="frontmatter-status-flag"),
+    pytest.param("edit_memory", edit({"type": "set_frontmatter", "key": "resource", "value": "a\nb"}), id="frontmatter-multiline"),
 ]
 
 
@@ -235,6 +288,38 @@ async def test_denied_domains_never_execute(cli: Path, tool: str, arguments: dic
     assert calls(cli) == []
 
 
+def ref(domain: str) -> dict[str, object]:
+    """Build one native inbound reference from the given domain."""
+    return {"domain": domain, "kind": "relation", "path": f"{domain}.md"}
+
+
+HINT = "build_context anchor crystalline://notes/team/plan to explore linked knowledge"
+
+
+BOTH = [ref("notes"), ref("secret")]
+
+
+@pytest.mark.parametrize(
+    "policy,refs,edges,inbound,hinted",
+    [
+        pytest.param(None, BOTH, {}, {"count": 7, "refs": BOTH}, True, id="unrestricted-unchanged"),
+        pytest.param(("notes",), BOTH, {}, {"count": 1, "refs": [ref("notes")]}, True, id="denied-refs-dropped"),
+        pytest.param(("notes",), [ref("secret")], {}, {"count": 0, "refs": []}, False, id="only-denied-drops-hint"),
+        pytest.param(("notes",), [ref("secret")], {"links": [{"resolved": True}]}, {"count": 0, "refs": []}, True, id="resolved-outbound-keeps-hint"),
+    ],
+)
+async def test_read_redacts_inbound_references_outside_the_allowlist(
+    cli: Path, policy: tuple[str, ...] | None, refs: list[dict[str, object]], edges: dict[str, object], inbound: dict[str, object], hinted: bool
+) -> None:
+    """Remove denied linking domains, their share of the capped count, and an edge hint that only they justify."""
+    payload = {"checksum": "c", "content": "body", **edges, "inbound": {"count": 7, "refs": refs}, "related": HINT}
+    respond(cli, stdout=json.dumps(payload))
+    async with Client(create_server(Settings(allowed_domains=policy))) as client:
+        result = (await client.call_tool("read_memory", TARGET)).structured_content
+    expected = {key: value for key, value in {**payload, "inbound": inbound}.items() if hinted or key != "related"}
+    assert result == expected
+
+
 @pytest.mark.parametrize(
     "tool,arguments", [pytest.param("read_memory", TARGET, id="read"), pytest.param("create_memory", {**NOTE, "content": ""}, id="empty-body")]
 )
@@ -259,7 +344,14 @@ async def test_tool_annotations_separate_reads_from_mutations(cli: Path) -> None
     """Verify read-only, destructive, and closed-world hints on the memory tools."""
     async with Client(create_server(Settings())) as client:
         hints = {tool.name: tool.annotations for tool in await client.list_tools()}
-    assert {name for name, hint in hints.items() if hint and hint.read_only_hint} == {"health", "read_memory", "search_memories"}
+    assert {name for name, hint in hints.items() if hint and hint.read_only_hint} == {
+        "health",
+        "read_memory",
+        "search_memories",
+        "build_memory_context",
+        "review_memories",
+        "get_memory_vocabulary",
+    }
     assert {name for name, hint in hints.items() if hint and hint.destructive_hint} == {"edit_memory", "delete_memory"}
     assert all(hint and hint.open_world_hint is False for name, hint in hints.items() if name not in {"health", "read_memory"})
     assert hints["read_memory"] and hints["read_memory"].open_world_hint is True
@@ -347,6 +439,7 @@ async def test_unset_input_ceiling_preserves_unbounded_writes(cli: Path) -> None
         pytest.param("delete_memory", {**TARGET, "permalink": "long/" + "p" * 64}, id="delete"),
         pytest.param("search_memories", {"workspace_id": WORKSPACE_ID, "domains": ["notes"], "query": "q" * 64}, id="search"),
         pytest.param("create_memory", {**NOTE, "content": ""}, id="create-empty"),
+        pytest.param("edit_memory", edit({"type": "set_frontmatter", "key": "resource", "value": "https://example.com/" + "r" * 64}), id="frontmatter"),
     ],
 )
 async def test_input_limits_apply_only_to_write_content(cli: Path, tool: str, arguments: dict[str, object]) -> None:

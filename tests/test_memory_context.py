@@ -103,7 +103,6 @@ async def test_memory_servers_retain_home_defaults_after_environment_changes(
 def test_context_is_immutable_and_redacts_credentials(monkeypatch: pytest.MonkeyPatch, direct: bool) -> None:
     """Keep captured credentials immutable and absent from representations and config identity."""
     monkeypatch.setenv("CRYSTALLINE_EMBEDDINGS_API_KEY", "engine-secret")
-    monkeypatch.setenv("EMBEDDING_API_KEY", "provider-secret")
     captured = EngineContext.capture()
     supplied = dict(captured.environment)
     context = EngineContext(supplied, captured.state_home, captured.config_identity) if direct else captured
@@ -112,7 +111,6 @@ def test_context_is_immutable_and_redacts_credentials(monkeypatch: pytest.Monkey
     assert context.environment["CRYSTALLINE_EMBEDDINGS_API_KEY"] == "engine-secret"
     assert not isinstance(context.environment, MutableMapping)
     assert "engine-secret" not in repr(context) + context.config_identity
-    assert "provider-secret" not in repr(context) + context.config_identity
     with pytest.raises(FrozenInstanceError):
         setattr(context, "state_home", Path("/changed"))
     assert context.config_identity != EngineContext.capture().config_identity

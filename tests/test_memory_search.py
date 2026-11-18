@@ -28,6 +28,11 @@ BASE: dict[str, object] = {"workspace_id": WORKSPACE_ID, "query": "retries", "do
             id="filters-and-paging",
         ),
         pytest.param({**BASE, "page": 20000, "limit": 100}, ["--domain=notes", "--limit=100", "--page=20000", "retries"], id="deep-page"),
+        pytest.param(
+            {**BASE, "tags": ["x"], "status": "stable"},
+            ["--domain=notes", "--tag=x", "--status=stable", "--limit=10", "--page=1", "retries"],
+            id="status-filter",
+        ),
     ],
 )
 async def test_search_runs_one_cli_command_and_returns_native_json(cli: Path, arguments: dict[str, object], argv: list[str]) -> None:
@@ -58,6 +63,9 @@ def without(key: str) -> dict[str, object]:
         pytest.param({**BASE, "domains": []}, id="domains-empty"),
         pytest.param({**BASE, "domains": [""]}, id="domain-empty"),
         pytest.param({**BASE, "domains": ["notes", "-x"]}, id="domain-flag"),
+        pytest.param({**BASE, "status": "-x"}, id="status-flag"),
+        pytest.param({**BASE, "status": ""}, id="status-empty"),
+        pytest.param({**BASE, "status": "a b "}, id="status-padded"),
         pytest.param({**BASE, "tags": ["a,b"]}, id="tag-comma"),
         pytest.param({**BASE, "limit": 0}, id="limit-low"),
         pytest.param({**BASE, "limit": 101}, id="limit-high"),

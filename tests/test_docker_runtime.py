@@ -26,7 +26,7 @@ def launcher(tmp_path: Path) -> Path:
         "with open(os.environ['DOCKER_LOG'], 'a') as log:\n"
         "    log.write(json.dumps({'args': sys.argv[1:], 'env': dict(os.environ)}) + '\\n')\n"
         "if os.environ.get('DOCKER_VALIDATE_PREFLIGHT') and sys.argv[1] == 'run' and '--name' not in sys.argv:\n"
-        "    environment = {k: v for k, v in os.environ.items() if not k.startswith(('MARABRAIN_', 'EMBEDDING_', 'LLM_'))}\n"
+        "    environment = {k: v for k, v in os.environ.items() if not k.startswith(('MARABRAIN_', 'LLM_'))}\n"
         "    for index, argument in enumerate(sys.argv[:-1]):\n"
         "        if argument == '--env':\n"
         "            name, separator, value = sys.argv[index + 1].partition('=')\n"
@@ -41,17 +41,14 @@ def launcher(tmp_path: Path) -> Path:
 
 @pytest.mark.parametrize("domains", [None, "[]", '["project notes"]'])
 def test_launcher_forwards_controls_and_mounts_in_both_containers(launcher: Path, domains: str | None) -> None:
-    """Preflight and runtime receive identical controls and read-only credential mounts."""
+    """Preflight and runtime receive identical controls and the read-only bearer mount."""
     bearer = launcher / "bearer"
-    key = launcher / "key"
     bearer.write_text(SECRET)
-    key.write_text(SECRET)
-    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "LLM_"))}
     environment.update(
         PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}",
         DOCKER_LOG=str(launcher / "calls"),
         MARABRAIN_BEARER_SECRET_FILE=str(bearer),
-        EMBEDDING_API_KEY_FILE=str(key),
         MARABRAIN_HEALTH_TIMEOUT_SECONDS="4.5",
         MARABRAIN_COMMAND_TIMEOUT_SECONDS="42",
         MARABRAIN_ENGINE_STARTUP_TIMEOUT_SECONDS="12",
@@ -77,7 +74,6 @@ def test_launcher_forwards_controls_and_mounts_in_both_containers(launcher: Path
     for call in calls[1:]:
         args = call["args"]
         assert f"type=bind,source={bearer},target=/run/secrets/marabrain_bearer,readonly" in args
-        assert f"type=bind,source={key},target=/run/secrets/embedding_api_key,readonly" in args
         for name in (
             "MARABRAIN_ALLOWED_DOMAINS",
             "MARABRAIN_HEALTH_TIMEOUT_SECONDS",
@@ -101,7 +97,7 @@ def test_launcher_forwards_controls_and_mounts_in_both_containers(launcher: Path
 
 def test_launcher_rejects_missing_credential_before_docker(launcher: Path) -> None:
     """A nonexistent host credential fails before building or launching a container."""
-    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_"))}
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("MARABRAIN_")}
     environment.update(
         PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}", DOCKER_LOG=str(launcher / "calls"), MARABRAIN_BEARER_SECRET_FILE=str(launcher / "missing")
     )
@@ -118,7 +114,7 @@ def test_launcher_forwards_optional_budgets_for_settings(
     launcher: Path, monkeypatch: pytest.MonkeyPatch, startup: str | None, operation: str | None, expected: tuple[float | None, float | None]
 ) -> None:
     """Parse actual preflight and runtime forwarding from unset, blank, or configured shell values."""
-    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "LLM_"))}
     environment.update(PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}", DOCKER_LOG=str(launcher / "calls"))
     budgets = {"MARABRAIN_STARTUP_TIMEOUT_SECONDS": startup, "MARABRAIN_OPERATION_TIMEOUT_SECONDS": operation}
     (launcher / ".env").write_text("".join(f"{name}={value}\n" for name, value in budgets.items() if value is not None))
@@ -169,7 +165,7 @@ def test_launcher_forwards_optional_limits_for_settings(
 ) -> None:
     """Parse each container's forwarded limits, including sourced overrides and invalid values."""
     names = ("MARABRAIN_MAX_TRANSIENT_PROCESSES", "MARABRAIN_MAX_CAPTURE_BYTES")
-    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "LLM_"))}
     environment.update(PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}", DOCKER_LOG=str(launcher / "calls"), MARABRAIN_BEARER_SECRET=SECRET)
     environment.update((name, value) for name, value in zip(names, exported, strict=True) if value is not None)
     if dotenv is not None:
@@ -181,7 +177,7 @@ def test_launcher_forwards_optional_limits_for_settings(
     for call in calls[1:]:
         with pytest.MonkeyPatch.context() as container:
             for name in tuple(os.environ):
-                if name.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_")):
+                if name.startswith(("MARABRAIN_", "LLM_")):
                     container.delenv(name)
             for index, argument in enumerate(call["args"][:-1]):
                 if argument == "--env":
@@ -222,7 +218,7 @@ def test_launcher_forwards_uniform_limits_and_validates_preflight(
 ) -> None:
     """Verify scalar precedence, disabled values and preflight rejection through constructed Docker environments."""
     names = ("MARABRAIN_DOMAIN_COMMAND_CAPACITY", "LLM_COMPRESSION_CACHE_MAX_ENTRIES", "LLM_COMPRESSION_CACHE_MAX_BYTES")
-    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "LLM_"))}
     environment.update(
         PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}",
         DOCKER_LOG=str(launcher / "calls"),
@@ -242,7 +238,7 @@ def test_launcher_forwards_uniform_limits_and_validates_preflight(
     for call in calls[1:]:
         with pytest.MonkeyPatch.context() as container:
             for name in tuple(os.environ):
-                if name.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_")):
+                if name.startswith(("MARABRAIN_", "LLM_")):
                     container.delenv(name)
             for name, value in zip(names, expected, strict=True):
                 assert any(call["args"][index : index + 2] == ["--env", name] for index in range(len(call["args"]) - 1))
@@ -276,7 +272,7 @@ def test_launcher_forwards_input_limits_and_validates_preflight(
 ) -> None:
     """Verify both input limits reach preflight and runtime with sourced precedence, and invalid values fail preflight."""
     names = ("MARABRAIN_MAX_INPUT_BYTES", "MARABRAIN_MAX_TOTAL_INPUT_BYTES")
-    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "LLM_"))}
     environment.update(
         PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}", DOCKER_LOG=str(launcher / "calls"), MARABRAIN_BEARER_SECRET=SECRET, DOCKER_VALIDATE_PREFLIGHT="1"
     )
@@ -293,7 +289,7 @@ def test_launcher_forwards_input_limits_and_validates_preflight(
     for call in calls[1:]:
         with pytest.MonkeyPatch.context() as container:
             for name in tuple(os.environ):
-                if name.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_")):
+                if name.startswith(("MARABRAIN_", "LLM_")):
                     container.delenv(name)
             for name, value in zip(names, expected, strict=True):
                 assert any(call["args"][index : index + 2] == ["--env", name] for index in range(len(call["args"]) - 1))
@@ -328,7 +324,7 @@ def test_launcher_forwards_total_ceiling_and_validates_preflight(
 ) -> None:
     """Forward the application-wide cache ceiling to both containers and reject it in preflight without the per-pair limits."""
     names = ("LLM_COMPRESSION_CACHE_MAX_ENTRIES", "LLM_COMPRESSION_CACHE_MAX_BYTES", "LLM_COMPRESSION_CACHE_TOTAL_MAX_BYTES")
-    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "LLM_"))}
     environment.update(
         PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}",
         DOCKER_LOG=str(launcher / "calls"),
@@ -348,7 +344,7 @@ def test_launcher_forwards_total_ceiling_and_validates_preflight(
     for call in calls[1:]:
         with pytest.MonkeyPatch.context() as container:
             for name in tuple(os.environ):
-                if name.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_")):
+                if name.startswith(("MARABRAIN_", "LLM_")):
                     container.delenv(name)
             for name, value in zip(names, expected, strict=True):
                 assert any(call["args"][index : index + 2] == ["--env", name] for index in range(len(call["args"]) - 1))

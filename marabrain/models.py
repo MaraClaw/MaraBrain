@@ -2,9 +2,10 @@
 
 import json
 import re
-from typing import Annotated, Literal
+from datetime import date
+from typing import Annotated, Literal, Self
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -45,6 +46,15 @@ def _tag(value: str) -> str:
     return value
 
 
+def _is_date(value: str) -> bool:
+    """Return whether the text names a real calendar date."""
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _metadata(value: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """Require finite JSON numbers and valid Unicode before executing the CLI."""
     try:
@@ -78,6 +88,27 @@ Checksum = Annotated[str, Field(pattern=r"^[\x21-\x7e]{1,128}$", description="Ch
 Query = Annotated[str, Field(min_length=1, max_length=1024, description="Search text."), AfterValidator(_positional)]
 Limit = Annotated[int, Field(ge=1, le=100)]
 Page = Annotated[int, Field(ge=1)]
+Status = Annotated[
+    str, Field(min_length=1, max_length=64, description="Lifecycle status, such as stable, superseded, or deprecated."), AfterValidator(_positional)
+]
+Depth = Annotated[int, Field(ge=1, le=3, description="Relation hops to traverse from the anchor.")]
+MaxRelated = Annotated[int, Field(ge=1, le=100, description="Keep only this many top-ranked related memories beyond the anchor.")]
+Timeframe = Annotated[
+    str, Field(pattern=r"^[1-9][0-9]{0,3}[dwy]$", description="Keep only related memories recorded within this window: days, weeks, or years, such as 7d.")
+]
+Family = Literal["temporal", "structure", "redundancy", "meaning"]
+Families = Annotated[list[Family], Field(min_length=1, max_length=4, description="Detector families to restrict the review to.")]
+FrontmatterKey = Literal[
+    "tags", "status", "valid_from", "valid_to", "stale_after", "source_date", "resource", "source_version", "sources", "salience", "verified", "evolve_ack"
+]
+_LIST_KEYS = frozenset({"tags", "sources"})
+_DATE_KEYS = frozenset({"valid_from", "valid_to", "stale_after", "source_date"})
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+FrontmatterItem = Annotated[str, Field(min_length=1, max_length=512), AfterValidator(_tag)]
+FrontmatterValue = Annotated[
+    str, Field(min_length=1, max_length=2048, description="New scalar value for keys other than tags and sources."), AfterValidator(_single_line)
+]
+FrontmatterValues = Annotated[list[FrontmatterItem], Field(max_length=64, description="Whole new list for tags or sources; an empty list removes it.")]
 
 
 class _Edit(BaseModel):
@@ -130,7 +161,43 @@ class InsertAfterSectionEdit(_Edit):
     section: Section
 
 
+class SetFrontmatterEdit(BaseModel):
+    """Assign or remove one frontmatter field; omitting both value and values removes the field (verified stamps the caller)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    type: Literal["set_frontmatter"]
+    key: FrontmatterKey
+    value: FrontmatterValue | None = None
+    values: FrontmatterValues | None = None
+
+    @model_validator(mode="after")
+    def _check_value(self) -> Self:
+        """Match the value form to the key and validate dates, salience, and status before execution."""
+        if self.key in _LIST_KEYS:
+            if self.value is not None:
+                raise ValueError(f"{self.key} takes values, not value")
+        elif self.values is not None:
+            raise ValueError(f"{self.key} takes value, not values")
+        elif self.value is not None:
+            if self.key in _DATE_KEYS:
+                if not _DATE.fullmatch(self.value) or not _is_date(self.value):
+                    raise ValueError(f"{self.key} must be a YYYY-MM-DD date")
+            elif self.key == "salience":
+                try:
+                    salience = float(self.value)
+                except ValueError:
+                    raise ValueError("salience must be a number from 0 to 10") from None
+                if not 0 <= salience <= 10:
+                    raise ValueError("salience must be a number from 0 to 10")
+            elif self.key == "status":
+                _positional(self.value)
+                if len(self.value) > 64:
+                    raise ValueError("status must be at most 64 characters")
+        return self
+
+
 EditOperation = Annotated[
-    AppendEdit | PrependEdit | FindReplaceEdit | ReplaceSectionEdit | InsertBeforeSectionEdit | InsertAfterSectionEdit,
+    AppendEdit | PrependEdit | FindReplaceEdit | ReplaceSectionEdit | InsertBeforeSectionEdit | InsertAfterSectionEdit | SetFrontmatterEdit,
     Field(discriminator="type"),
 ]

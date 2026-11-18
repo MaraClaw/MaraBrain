@@ -78,7 +78,7 @@ def test_launcher_validates_and_runs_identical_managed_residency(
 ) -> None:
     """Apply dotenv precedence and managed ownership in real preflight settings and runtime arguments."""
     name = "MARABRAIN_MAX_RESIDENT_WORKSPACES"
-    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "LLM_"))}
     environment.update(
         PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}",
         DOCKER_LOG=str(launcher / "calls"),

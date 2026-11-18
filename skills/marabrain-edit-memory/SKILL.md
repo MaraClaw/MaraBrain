@@ -24,6 +24,7 @@ description: >-
 3. Select one operation from the table and supply its required content. Ask for
    missing content; use an empty string only when the task calls for it. Section
    bodies exclude their heading line; `replace_section` preserves that heading.
+   `set_frontmatter` takes no content: supply its `key` and `value` or `values`.
    Pass the read's checksum dynamically as `expected_checksum`.
 4. Call `edit_memory` once with the same `workspace_id`, domain, and permalink,
    the operation, and `expected_checksum`. If the checksum conflicts, read again and reassess the
@@ -33,6 +34,14 @@ description: >-
    the edit applied even though no success arrived. Read the target, or search
    and inspect it if necessary, to reconcile the actual state before repeating
    anything. Never retry a mutation blindly, especially append or prepend.
+
+When a fact becomes false because a newer memory replaces it, prefer superseding it over
+`find_replace`. Write the new memory with a `- supersedes [[Old Title]]` relation (see the
+create skill). On the old memory, use `set_frontmatter` to set `status` to `superseded`,
+append `- superseded_by [[New Title]]`, and optionally set `valid_to`. Each edit changes the
+memory, so read it again for the current `checksum` before the next guarded edit. Retired
+statuses (`superseded`, `deprecated`, `archived`, `legacy`) fade in search ranking, and
+`search_memories(status="stable")` returns only current memories.
 
 ## Tool contract
 
@@ -60,7 +69,8 @@ optional fields within `operation`.
   whitespace, and a leading `-`. Paths have no leading, trailing, or repeated
   `/`, empty segments, `.` or `..` segments, backslashes, or URLs. Preserve the
   returned identity and existing exact domain name.
-- Required `operation` is one object with required `type` and required string `content`.
+- Required `operation` is one object with required `type` and, except for
+  `set_frontmatter`, required string `content`.
   Content has no specified length limit and may be empty or multiline but
   cannot contain NUL. Missing or null content is invalid. Extra operation fields
   are rejected, including fields belonging to a different operation type.
@@ -76,10 +86,22 @@ optional fields within `operation`.
 | `replace_section` | Required `section`; optional `include_subsections` (boolean, default false) | Replace the section body, including subsections only when true. |
 | `insert_before_section` | Required `section` | Insert content before the section. |
 | `insert_after_section` | Required `section` | Insert content after the section. |
+| `set_frontmatter` | No `content`; required `key`; `value` or `values` (see below) | Assign or remove one frontmatter field without touching the body. |
 
 - `find_text` is a nonempty string without NUL, with no specified length limit.
   `section` is a 1-512 character heading path without ASCII controls or
   surrounding whitespace. Never submit NUL in any text.
+- `set_frontmatter` `key` is one of `tags`, `status`, `valid_from`, `valid_to`,
+  `stale_after`, `source_date`, `resource`, `source_version`, `sources`, `salience`,
+  `verified`, or `evolve_ack`. `tags` and `sources` take `values`, the whole new list
+  (at most 64 items, none containing a comma); an empty list or omitted `values`
+  removes the key. Every other key takes a single-line `value`; omitting it removes
+  the field, except `verified`, where omitting it stamps a verification by the caller.
+  Date keys must be `YYYY-MM-DD`, `salience` a number from 0 to 10, and `status` a
+  single token of at most 64 characters without a leading `-`. `value` on `tags` or
+  `sources`, or `values` on any other key, is rejected. Re-applying the same value
+  returns `unchanged: true`. It sends no stdin, so `MARABRAIN_MAX_INPUT_BYTES` does
+  not apply, and like every edit it purges that memory's cached compressions.
 - Discovery uses `search_memories(workspace_id, query, domains, tags=null, limit=10, page=1)`.
   Query is 1-1024 nonblank characters without ASCII controls, surrounding
   whitespace, or a leading `-`; domains is a nonempty list of domain strings.
@@ -126,5 +148,17 @@ or derive one from the content; stop if the returned checksum is unusable.
   "permalink": "team/plan",
   "expected_checksum": "example-source-checksum",
   "operation": {"type": "append", "content": "\nDeployment completed.\n"}
+}
+```
+
+Frontmatter edit: `set_frontmatter` retires a memory without changing its body.
+
+```json
+{
+  "workspace_id": "team_a",
+  "domain": "notes",
+  "permalink": "team/plan",
+  "expected_checksum": "example-source-checksum",
+  "operation": {"type": "set_frontmatter", "key": "status", "value": "superseded"}
 }
 ```

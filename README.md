@@ -3,21 +3,24 @@
 🦞 Second Brain For OpenClaw-backed Agents.
 
 Python MCP server named `marabrain-mcp`, built with FastMCP. The interface contains
-six tools and no resources or prompts. `health` takes no arguments and returns
+nine tools (`health` plus eight memory tools) and no resources or prompts. `health` takes no arguments and returns
 `{"status": "ok", "version": "0.4.7"}` when every resident workspace's
 [Crystalline](https://github.com/jordiboehme/crystalline) engine answers
-`crystalline ctl status` within one total health probe deadline. With zero resident
+`crystalline ctl status` within one total health probe deadline. Workspaces are probed
+concurrently, so the probe time does not grow with the number of resident workspaces; when
+`MARABRAIN_MAX_TRANSIENT_PROCESSES` is set, probes share its single control slot and run one
+at a time. With zero resident
 workspaces, the service is ready and `health` succeeds without starting an engine.
 Missing executables, failed probes, and probes exceeding that shared deadline produce
 an MCP tool error. Health does not assure embedding-model readiness.
-The other five tools manage memories through the Crystalline CLI; see [Memory tools](#memory-tools).
+The other eight tools manage memories through the Crystalline CLI; see [Memory tools](#memory-tools).
 
 ## Memory tools
 
-The tools run the pinned Crystalline 0.32.1 `crystalline --json` command without a shell,
+The tools run the pinned Crystalline 0.33.0 `crystalline --json` command without a shell,
 send content on stdin, and return its JSON object unchanged (native fields, no added keys)
-unless `read_memory` is called with `compress=true`, as described below.
-All five memory tools require `workspace_id`: a strict, case-sensitive ASCII string
+unless `read_memory` is called with `compress=true` or under a domain allowlist, as described below.
+All eight memory tools require `workspace_id`: a strict, case-sensitive ASCII string
 of 1-64 characters matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. There is no default,
 normalization, or adoption of legacy data. For example, `Team_A` and `team_a` are
 different workspaces; missing IDs, non-string values, whitespace, dots, and Unicode
@@ -79,7 +82,10 @@ reconciles that workspace's complete list.
 | `read_memory` | `workspace_id`, `domain`, `permalink`; optional `compress` (boolean, default false), `query` (default null) | Returns full Markdown with frontmatter, `checksum`, links, observations, and relations; compression replaces returned `content` with distilled context and adds `compressed: true` |
 | `edit_memory` | `workspace_id`, `domain`, `permalink`, `operation`, optional `expected_checksum` | Applies one edit operation |
 | `delete_memory` | `workspace_id`, `domain`, `permalink` | Permanently deletes without confirmation; no checksum guard |
-| `search_memories` | required `workspace_id`, nonempty `query` and nonempty `domains` (list); optional `tags` (list), `limit` (1-100, default 10), `page` (1 or more, default 1) | Searches the named domains in that workspace and returns native JSON unchanged |
+| `search_memories` | required `workspace_id`, nonempty `query` and nonempty `domains` (list); optional `tags` (list), `limit` (1-100, default 10), `page` (1 or more, default 1), `status` (one lifecycle status, such as `stable`) | Searches the named domains in that workspace and returns native JSON unchanged |
+| `build_memory_context` | `workspace_id`, `domain`, `permalink`; optional `domains` (list), `depth` (1-3), `max_related` (1-100), `timeframe` (such as `7d`) | Returns the graph neighbourhood of one memory as nodes and typed edges, without content |
+| `review_memories` | `workspace_id`, nonempty `domains` (list); optional `families` (list of `temporal`, `structure`, `redundancy`, `meaning`), `limit` (1-100, default 10), `page` (1 or more, default 1) | Sweeps the named domains read-only and returns a ranked queue of maintenance findings |
+| `get_memory_vocabulary` | `workspace_id`, `domain` | Lists the categories, relation types, statuses, tags, and types a domain uses, with counts |
 
 `search_memories` requires both query text and at least one domain; a missing, null, empty,
 or whitespace-only value is rejected before anything runs. Each hit includes the `domain` and
@@ -114,6 +120,7 @@ Edit `operation` is an object whose `type` selects the fields:
 | `find_replace` | `find_text`; optional `expected_replacements` (0 or more) |
 | `replace_section` | `section`; optional `include_subsections` (default false) |
 | `insert_before_section`, `insert_after_section` | `section` |
+| `set_frontmatter` | No `content`; `key`; optional `value` or `values` (see below) |
 
 ```json
 {"workspace_id": "team_a", "domain": "notes", "permalink": "team/plan", "expected_checksum": "<checksum from read_memory>",
@@ -122,8 +129,81 @@ Edit `operation` is an object whose `type` selects the fields:
 
 Section content is the section body; the heading line stays. Pass the `checksum` from
 `read_memory` as `expected_checksum` so an edit is refused if the memory changed after
-that read; without it the last write wins. Explicit domain administration, metadata editing, and
-attachments are not exposed.
+that read; without it the last write wins. Domain administration and attachments are not
+exposed, and metadata fields are edited only through `set_frontmatter`.
+
+`set_frontmatter` assigns or removes one frontmatter field and leaves the body alone. `key` is one of
+`tags`, `status`, `valid_from`, `valid_to`, `stale_after`, `source_date`, `resource`,
+`source_version`, `sources`, `salience`, `verified`, or `evolve_ack`. `tags` and `sources` take
+`values`, the whole new list (up to 64 items, none containing a comma); an empty list, or omitting
+`values`, removes the key. Every other key takes `value`; omitting it removes the field, except for
+`verified`, where omitting it stamps a verification by the caller. The date keys (`valid_from`,
+`valid_to`, `stale_after`, `source_date`) must be `YYYY-MM-DD`, `salience` is a number from 0 to 10,
+and `status` is a single token of at most 64 characters that does not start with a hyphen. Giving
+`value` to `tags` or `sources`, or `values` to any other key, is rejected. Setting a field to the value
+it already has returns `unchanged: true`. `expected_checksum` works as for the other operations. The
+operation sends nothing on stdin, so `MARABRAIN_MAX_INPUT_BYTES` does not apply to it; like every edit,
+it purges cached compressions of that memory.
+
+```json
+{"workspace_id": "team_a", "domain": "notes", "permalink": "team/plan", "expected_checksum": "<checksum from read_memory>",
+ "operation": {"type": "set_frontmatter", "key": "status", "value": "superseded"}}
+```
+
+### Knowledge graph
+
+Memory bodies carry a graph. A bullet such as `- [decision] Ship behind a flag #release` is an
+observation: a category, a fact, and optional tags. A bullet such as `- depends_on [[Rollout plan]]`
+is a relation: a type followed by a link to a target title. Quote a multi-word type, as in
+`- "relates to" [[Rollout plan]]`; an unquoted `- see also [[Rollout plan]]` becomes a plain link, not
+a relation. A target resolves by title within the memory's own domain, and `[[other-domain:Title]]`
+crosses into another domain. Unresolved targets are kept and flagged `resolved: false` in
+`read_memory`. That response also lists `inbound.refs`, the memories that link to the one read, which can
+come from other domains. When `MARABRAIN_ALLOWED_DOMAINS` is set, `read_memory` removes every reference
+whose domain is outside the allowlist. Crystalline lists at most five references, so a hidden one could
+be denied: under an allowlist `inbound.count` is the number of references still listed, and the
+`related` neighbourhood hint is removed when neither a listed reference nor a resolved outbound relation
+or link remains. Without an allowlist the response is unchanged.
+
+`build_memory_context(workspace_id, domain, permalink, domains=null, depth=null, max_related=null, timeframe=null)`
+returns the neighbourhood of one memory as native JSON without any memory content:
+`{anchor, depth, timeframe, nodes, edges}`. Each node has `id`, `domain`, `permalink`, `title`, `type`,
+and `seed`; each edge has `from`, `to`, `kind`, and `rel_type`. Traversal follows relations and links in
+both directions. `depth` is 1 to 3 (the engine's default is 1), `max_related` (1 to 100) keeps the
+top-ranked neighbours, and `timeframe` is one to four digits without a leading zero followed by `d`, `w`,
+or `y`, such as `7d`, `2w`, or `1y`. MaraBrain validates `timeframe` itself because Crystalline silently
+ignores malformed values. The neighbourhood is restricted to the anchor's domain plus any extra
+`domains`; every listed domain passes domain admission, and a list mixing allowed and denied domains is
+rejected in full. MaraBrain builds the anchor URL on the server, so callers never pass URLs or globs, and
+a missing anchor is a tool error. Read the nodes you need with `read_memory`, using each node's `domain`
+and `permalink`.
+
+```json
+{"workspace_id": "team_a", "domain": "notes", "permalink": "team/plan", "depth": 2, "max_related": 10, "timeframe": "30d"}
+```
+
+To retire a fact that a newer memory replaces, write the new memory with `- supersedes [[Old Title]]`.
+On the old memory, use `set_frontmatter` to set `status` to `superseded`, append
+`- superseded_by [[New Title]]`, and optionally set `valid_to`. Retired statuses (`superseded`,
+`deprecated`, `archived`, `legacy`) fade in search ranking. `search_memories` with `status="stable"`
+returns only current memories (`stable` also matches the legacy `current`); a search takes one status value.
+
+`review_memories(workspace_id, domains, families=null, limit=10, page=1)` runs a read-only
+`crystalline evolve` sweep over the named domains and returns native JSON with a ranked `queue` of
+findings plus `guidance`. Each finding has `rule`, `class` (`mechanical` or `judgment`), `domain`,
+`permalink`, `title`, `evidence`, `finding`, `fix`, `line`, and `priority`. `families` restricts the
+sweep to any of `temporal`, `structure`, `redundancy`, and `meaning`. Typical findings are `V102` (an
+unresolved link), `V101` (a current memory references a retired one), and `V004` (a memory marked
+superseded without a successor). The sweep changes nothing.
+
+`get_memory_vocabulary(workspace_id, domain)` returns native JSON listing the `categories`,
+`relation_types`, `statuses`, `tags` (with engram and observation counts), and `types` the domain
+uses. Check it before writing so new memories reuse existing terms.
+
+`build_memory_context`, `review_memories`, and `get_memory_vocabulary` are read-only, idempotent,
+closed-world tools. They use the same workspace lease, domain admission, deadlines, process and capture
+limits, and per-domain command capacity as `search_memories`. `read_memory` remains the only open-world
+tool.
 
 Arguments are validated before anything runs. Domains, titles, permalinks, folders, and
 queries must not start with a hyphen, contain control characters, or have surrounding
@@ -253,14 +333,15 @@ Rotate the credential by updating both the server and backend and restarting the
 Within each workspace, domain admission checks both the supplied and resolved exact top-level names before mutations;
 normalization never widens an allowlist. For a new mixed-case input, permit both that spelling
 and its lowercase name, or use the lowercase spelling directly. Admission does not isolate files,
-resolve aliases, redact linked metadata, or authorize workspace membership. A mixed allowed and denied search is
+resolve aliases, or authorize workspace membership; under an allowlist, `read_memory` removes inbound
+references from denied domains (see [Knowledge graph](#knowledge-graph)). A mixed allowed and denied search is
 rejected in full. Docker's independent healthcheck has a three-second HTTP timeout
 and five-second outer timeout regardless of the health probe deadline; client
 timeouts and HTTP shutdown grace are separate limits too.
 
 The two optional total budgets are independent. The startup total now applies to each
 workspace activation and covers preparation, the workspace's existing-engine check,
-embedding initialization, managed daemon launch and readiness, and initial domain
+managed daemon launch and readiness, and initial domain
 synchronization as applicable. It never limits the server's serving lifetime. Each
 memory operation's total includes waiting for workspace activation, then domain
 resolution, lock acquisition, domain synchronization and registration, and the final memory command. Compressed
@@ -280,24 +361,24 @@ or workspace reactivation reconciles uncertain domain registration before trusti
 Each application captures an immutable snapshot of its engine execution environment
 at `run_application()` entry or standalone `create_server()` construction. Each workspace
 derives its own HOME/XDG paths, configuration identity, registry, health checks,
-initialization, daemon supervision, and memory tools from that snapshot and the captured
+daemon supervision, and memory tools from that snapshot and the captured
 workspace root. Base captured `CRYSTALLINE_*` overrides, including `CRYSTALLINE_CONFIG`,
 are removed from workspace runtimes; base configuration files are not copied. Later
-process environment changes do not redirect an existing application. Initializer
-credential overlays apply only to that workspace's owned daemon. External mode requires
+process environment changes do not redirect an existing application. External mode requires
 the daemon provisioned for those workspace paths; a successful health probe does not
 identify the external daemon's configuration.
 
 The optional resource limits are independent and default to disabled. With
 `MARABRAIN_MAX_TRANSIENT_PROCESSES=C`, each application shares C-1 slots for memory
-and domain-registry commands and one reserved control slot for health, readiness,
-or embedding initialization across all workspace activations and serving. Saturated lanes fail
+and domain-registry commands and one reserved control slot for health and readiness
+probes across all workspace activations and serving. Saturated lanes fail
 immediately before launching a child or CLI worker; commands do not queue. Capacity
 remains occupied until the child is reaped and its worker finishes. Separate
 applications have independent capacity; persistent daemons and LLM calls are excluded.
 Managed daemon count is independent of this transient limit. Without a resident cap,
 it grows with activated workspaces. Account for each resident workspace's daemon memory
-and embedding-model copies.
+and embedding-model copies: in `benchmarks/http_stress.py` on Crystalline 0.33.0, each
+daemon held roughly 90 to 340 MB resident under load. Set a resident cap that fits the host.
 
 In managed mode, `MARABRAIN_MAX_RESIDENT_WORKSPACES=4` caps resident runtimes at four.
 Starting, ready, and retiring runtimes occupy their slots until owned daemon and helper
@@ -305,7 +386,7 @@ cleanup finishes. A new workspace can retire the least recently used idle runtim
 if all slots are starting, leased, or retiring, the request fails immediately with
 `Resident workspace capacity is busy.` There is no queue waiting for busy capacity.
 Concurrent requests for the same activation share it, and canceling one caller does
-not cancel startup for the others. All five memory tools lease the runtime through
+not cancel startup for the others. All eight memory tools lease the runtime through
 registry work, native commands, and their cleanup. Recency records memory operations;
 health pins only the resident snapshot and does not refresh recency or reactivate
 retired workspaces. Unexpected daemon death remains fatal to the application.
@@ -320,13 +401,13 @@ or empty residency preserves existing unbounded behavior in either engine mode;
 a configured cap requires `MARABRAIN_ENGINE_MODE=managed`.
 
 `MARABRAIN_DOMAIN_COMMAND_CAPACITY` adds admission per workspace and resolved domain for the final create,
-read, edit, delete, and search commands. For example, export
+read, edit, delete, search, context, review, and vocabulary commands. For example, export
 `MARABRAIN_DOMAIN_COMMAND_CAPACITY=2` to give every resolved domain in each workspace
 its own capacity of two commands. Aliases and case variants within a workspace share
 their resolved domain's capacity. The same domain name in another workspace has
 independent counters.
-A search reserves one permit per distinct resolved domain atomically; if any domain
-is full, the whole search fails immediately without launching its final command.
+A search, context, or review command reserves one permit per distinct resolved domain atomically;
+if any domain is full, the whole command fails immediately without launching it.
 
 Domain capacities do not enlarge or replace the global data and reserved control
 lanes. Registry synchronization and registration remain outside domain quotas;
@@ -340,7 +421,7 @@ malformed values, booleans, fractional values, and
 nonpositive capacities fail configuration validation.
 
 `MARABRAIN_MAX_CAPTURE_BYTES=S` limits raw stdout retained per captured child for
-memory, registry, status and embedding initialization commands. Exactly S bytes can
+memory, registry and status commands. Exactly S bytes can
 succeed only after EOF, successful exit and response validation. The first excess
 byte causes a fixed, redacted failure and owned-child cleanup; truncated JSON is
 never returned and mutations are never retried. Retained raw stdout uses at most
@@ -351,7 +432,7 @@ values are rejected, as is capacity below 2.
 
 `MARABRAIN_MAX_TOTAL_CAPTURE_BYTES=T` independently limits logical retained raw
 stdout payload across all captures in one application, including workspace memory
-and registry commands, status/readiness probes, and embedding initialization.
+and registry commands, and status/readiness probes.
 Storage grows incrementally under this policy, so small responses do not reserve
 the per-child ceiling. Each chunk reserves bytes atomically before retention;
 the first chunk exceeding either configured byte limit fails immediately with the
@@ -361,8 +442,7 @@ data-capture pressure. Separate applications have independent byte budgets.
 
 Aliased views of one raw buffer count once. Its charge remains until child reaping,
 worker joining or stream closure, and JSON parsing or discard have all finished.
-Raw storage is cleared before its charge is released; initializer output is
-released before daemon launch and serving. This is a retained-payload bound,
+Raw storage is cleared before its charge is released. This is a retained-payload bound,
 not an RSS or allocator guarantee: parsed objects, allocator slack, fixed read and
 transport buffers, stdin, stderr, daemon diagnostics, and LLM responses are excluded.
 Unset or empty preserves existing capture allocation behavior. Boolean, fractional,
@@ -383,7 +463,7 @@ at all: a refusal at either level leaves no charge at the other. Refusal is imme
 with the same fixed process-capacity or capture-limit error; there is no queue, and
 the error names no workspace. Charges last until the child is reaped, its worker
 has joined, and its output is parsed or discarded, including on timeout, cancellation,
-and launch failure. Health, readiness, and embedding initialization keep using the
+and launch failure. Health and readiness probes keep using the
 reserved control slot and are never charged to a workspace share. Shares are counted
 per workspace ID within one application, so reactivating a retired workspace cannot
 enlarge its share while earlier commands finish; separate applications keep independent
@@ -396,6 +476,11 @@ exposing input.
 one byte is refused; multibyte text is counted in encoded bytes, not characters. The
 check runs before the workspace is leased, so a refused call runs no Crystalline command,
 activates no workspace, and retires no other tenant's idle runtime.
+
+Over HTTP, the MCP SDK also rejects any request body larger than 4 MiB with status 413
+before MaraBrain sees it. JSON escaping counts toward that limit, so the largest content a
+single HTTP `create_memory` or `edit_memory` call can carry is somewhat below 4 MiB. Stdio
+has no such ceiling.
 
 `MARABRAIN_MAX_TOTAL_INPUT_BYTES=T` independently limits the stdin bytes held by
 in-flight commands across all workspaces in one application. The encoded size is
@@ -424,7 +509,7 @@ responses; credentials are redacted from configuration errors.
 ## Docker
 
 The multi-stage image uses `python:3.15.2-slim`, installs locked production
-dependencies, and copies the Crystalline v0.32.1 binary from its official
+dependencies, and copies the Crystalline v0.33.0 binary from its official
 multi-architecture image pinned by digest. It runs HTTP and lazily supervised
 workspace Crystalline daemons as a non-root user. Copy `.env.example` to `.env`
 and set `MARABRAIN_BEARER_SECRET` to a generated secret as described above, then run:
@@ -458,56 +543,27 @@ under the persistent mount if its data must survive replacement. This volume sur
 container replacement; back it up before removing it. Existing volumes must be writable
 by UID/GID 65532. A managed server requires exclusive workspace HOME/XDG paths; do not
 share the volume with another running engine or managed server. On first activation,
-each workspace's Crystalline daemon may download its embedding model; subsequent
+each workspace's Crystalline daemon downloads its default local embedding model; subsequent
 activations reuse that workspace's cache. Model storage grows with persisted workspaces;
 daemon memory grows with resident workspaces. The optional resident cap retires idle
 daemons without removing their data. Shutdown reaps owned daemons and preserves data. Health checks
 all resident engines within one total deadline, not embedding-model readiness or
-semantic-search quality. See the upstream [deployment guide](https://github.com/jordiboehme/crystalline/blob/v0.32.1/docs/deployment.md)
+semantic-search quality. See the upstream [deployment guide](https://github.com/jordiboehme/crystalline/blob/v0.33.0/docs/deployment.md)
 for offline model provisioning.
 
-### Remote embeddings
+### Embeddings
 
-Set `EMBEDDING_MODEL`, `EMBEDDING_PROVIDER_URL`, and `EMBEDDING_DIMS` together in
-`.env` to use an OpenAI-compatible embedding provider. Set `EMBEDDING_API_KEY`
-when the endpoint requires bearer authentication; otherwise leave it empty.
+Semantic search uses Crystalline's default local embedding model,
+`granite-embedding-97m-multilingual-r2`, which each workspace daemon downloads into
+its own cache on first activation and runs in-process. MaraBrain has no remote
+embedding provider and writes no embedding configuration; Crystalline's defaults apply.
 
-| Environment variable | Meaning |
-| --- | --- |
-| `EMBEDDING_MODEL` | Model name accepted by the provider |
-| `EMBEDDING_PROVIDER_URL` | HTTP or HTTPS API base, including any version prefix, without `/embeddings` |
-| `EMBEDDING_DIMS` | Expected positive vector length, checked against the provider response |
-| `EMBEDDING_API_KEY` | Optional bearer token, passed only at runtime |
-| `EMBEDDING_API_KEY_FILE` | Absolute host file path alternative, mounted read-only at `/run/secrets/embedding_api_key` |
-
-For each credential, specify either its raw variable or its file variable, not
-both nonempty. Files must be readable by UID/GID 65532 and contain a nonempty
-UTF-8 value without embedded line breaks or NUL; one terminal LF or CRLF is
-removed. Values are resolved at startup, so restart after rotating a file. File
-contents are not placed in Docker arguments, configured environment, or YAML;
-the managed Python process supplies the embedding key to each workspace's daemon environment.
-
-During each workspace activation, before starting its managed Crystalline daemon,
-bootstrap sends a small embedding request and checks its response and vector length.
-Provider configuration and bootstrap errors that previously stopped engine startup
-now surface on the first workspace activation, including authentication failures,
-unreachable providers, and mismatched dimensions. Crystalline does
-not support a `dimensions` request field, so choose a provider or model that
-already returns the expected vector length.
-
-After the check succeeds, activation merges provider settings into that workspace's
-own Crystalline configuration, preserving its unrelated settings and domains.
-It never rewrites the base `/data/config/crystalline/config.yaml` or copies base configuration.
-The file stores the API key's environment variable name, never its value. The
-remote provider avoids the default Granite embedding-model download. Restart the
-container after changing these variables; the activation check does not continuously
-monitor the provider, and MCP health checks only resident Crystalline engines.
-
-Leaving all embedding variables unset or empty preserves each workspace's existing
-Crystalline configuration and skips the remote-provider check. A fresh workspace uses the
-default local model. Changing providers or models does not automatically migrate
-existing vectors; follow Crystalline's indexing guidance before reusing an index
-with a different embedding space.
+Workspaces activated by an earlier MaraBrain release with `EMBEDDING_*` settings keep
+an `embeddings` section with `provider: openai-compatible` in their own
+`config.yaml` under that workspace's configuration directory. Remove that section
+to return the workspace to the local model, restart, and run `crystalline reindex --embed`
+with that workspace's environment to embed its memories with the local model; vectors
+from the old embedding space are not reused.
 
 ### Optional read compression
 
@@ -676,3 +732,16 @@ uv build
 Tests exercise configuration validation and the MCP interface, including
 authentication and transport boundaries. No external service credentials are
 needed for the test suite.
+
+`tests/integration` runs the real pinned engine and is excluded by default; run it with
+`uv run --no-sync pytest tests/integration -o addopts=""`. It creates and removes its own short
+root under `/tmp` so the workspace socket path stays within the macOS limit.
+`uv run --no-sync python benchmarks/graph_eval.py` evaluates graph-assisted recall, supersede
+currentness, review detection, and concurrent store and read load on an isolated engine, and
+writes `benchmarks/results/report.json` and `report.md`.
+`uv run --no-sync python benchmarks/http_stress.py` launches `python -m marabrain` as a separate
+HTTP process with managed engines under an isolated `/tmp` root and drives it only through `/mcp`:
+protocol overhead, concurrent writes, mixed agent load, write contention, large payloads,
+connection overload, wrong-token and wrong-Host floods, client aborts, a soak, SIGTERM under
+load, and a restart with capacity limits and durability checks. It writes
+`benchmarks/results/http_stress.json` and `http_stress.md`; `--quick` shortens it to a smoke run.

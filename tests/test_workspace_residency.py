@@ -166,6 +166,30 @@ async def test_health_pins_probes_without_refreshing_memory_lru(resident_cli: tu
             assert_reaped(row.pid)
 
 
+async def test_health_probes_activated_workspaces_concurrently(resident_cli: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hold every activated workspace's status probe at once so health cost does not grow with the workspace count."""
+    settings = managed_settings(None)
+    health: list[bool] = []
+
+    async def probe() -> None:
+        """Exercise the manager's real shared-deadline health probes."""
+        health.append(await manager.health())
+
+    with anyio.fail_after(15):
+        async with child_gates(monkeypatch) as gates:
+            manager = WorkspaceManager(settings, EngineContext.for_application(settings))
+            async with manager.lifespan():
+                for name in ("alpha", "beta"):
+                    (await manager.get(name)).context.state_home.joinpath("gate-status").touch()
+                async with anyio.create_task_group() as tasks:
+                    tasks.start_soon(probe)
+                    held = [await gates.receive(), await gates.receive()]
+                    assert held[0].event.pid != held[1].event.pid
+                    for gate in held:
+                        gate.release.set()
+                assert health == [True]
+
+
 async def test_failed_activation_releases_its_slot_after_cleanup(resident_cli: tuple[Path, Path]) -> None:
     """Recover a failed startup and keep all slots reserved through real child cleanup."""
     root, _ = resident_cli

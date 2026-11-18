@@ -62,6 +62,9 @@ def create_server(settings: Settings, *, context: EngineContext | None = None, _
     @asynccontextmanager
     async def lifespan(server: FastMCP) -> AsyncGenerator[None]:
         """Own workspace engines and compression producers for either MCP transport."""
+        # Without this lookup the MCP SDK re-lists and dereferences every tool on each HTTP tools/call to validate Mcp-Param headers.
+        schemas = {tool.name: tool.to_mcp_tool().input_schema for tool in await server.list_tools()}
+        server._mcp_server.get_tool_input_schema = schemas.get
         ready, stopped, finished = anyio.Event(), anyio.Event(), anyio.Event()
         owner = asyncio.current_task()
 
@@ -109,6 +112,7 @@ def create_server(settings: Settings, *, context: EngineContext | None = None, _
         operation_timeout_seconds=settings.operation_timeout_seconds,
         compression_cache=cache,
         max_input_bytes=settings.max_input_bytes,
+        allowed_domains=None if settings.allowed_domains is None else frozenset(settings.allowed_domains),
     )
     return server
 

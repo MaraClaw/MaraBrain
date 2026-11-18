@@ -3,6 +3,8 @@
 import os
 import shutil
 import sys
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Literal
@@ -36,10 +38,69 @@ class EngineStatus(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    version: Literal["0.32.1"]
+    version: Literal["0.33.0"]
     pid: int
     http: None
     embeddings: EmbeddingsStatus
+
+
+class Named(BaseModel):
+    """Parse one native graph node, search hit, or vocabulary term by its identifying field."""
+
+    model_config = ConfigDict(frozen=True)
+
+    permalink: str | None = None
+    name: str | None = None
+
+
+class Edge(BaseModel):
+    """Parse one native context edge; prose links carry no relation type."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rel_type: str | None = None
+
+
+class Neighbourhood(BaseModel):
+    """Parse the native build_memory_context nodes and edges."""
+
+    model_config = ConfigDict(frozen=True)
+
+    nodes: list[Named]
+    edges: list[Edge]
+
+
+class Hits(BaseModel):
+    """Parse native search hits."""
+
+    model_config = ConfigDict(frozen=True)
+
+    hits: list[Named]
+
+
+class Finding(BaseModel):
+    """Parse one native review finding's rule and subject."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rule: str
+    permalink: str | None = None
+
+
+class Review(BaseModel):
+    """Parse the native review queue."""
+
+    model_config = ConfigDict(frozen=True)
+
+    queue: list[Finding]
+
+
+class Vocabulary(BaseModel):
+    """Parse the native relation types in use."""
+
+    model_config = ConfigDict(frozen=True)
+
+    relation_types: list[Named]
 
 
 async def run_cli(arguments: list[str], environment: dict[str, str], timeout: float = 15) -> CompletedProcess[bytes]:
@@ -56,12 +117,20 @@ def payload(result: CallToolResult) -> dict[str, JsonValue]:
     return TypeAdapter(dict[str, JsonValue]).validate_python(result.structured_content)
 
 
+@pytest.fixture
+def short_root() -> Iterator[Path]:
+    """Provide a private root short enough for workspace socket paths on macOS, removed afterwards."""
+    root = Path(tempfile.mkdtemp(prefix="mbit", dir="/tmp")).resolve()
+    yield root
+    shutil.rmtree(root, ignore_errors=True)
+
+
 @pytest.mark.integration
-async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFactory) -> None:
+async def test_real_engine_memory_lifecycle(short_root: Path) -> None:
     """Round-trip a memory through real MCP tools and local embedding search, then stop the daemon."""
     executable = shutil.which("crystalline")
-    assert executable is not None, "Install Crystalline 0.32.1 on PATH before running tests/integration."
-    root = tmp_path_factory.getbasetemp().resolve()
+    assert executable is not None, "Install Crystalline 0.33.0 on PATH before running tests/integration."
+    root = short_root
     environment = {
         "PATH": os.pathsep.join((str(Path(executable).parent), os.defpath)),
         "HOME": str(root / "h"),
@@ -84,7 +153,7 @@ async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFac
 
     with anyio.fail_after(360):
         version = await run_cli(["--version"], environment)
-        assert version.stdout.decode().splitlines()[0] == "crystalline 0.32.1"
+        assert version.stdout.decode().splitlines()[0] == "crystalline 0.33.0"
         await run_cli(["--json", "model", "download"], environment, timeout=240)
         workspace_id = "integration-primary"
         contexts: dict[str, EngineContext] = {}
@@ -162,6 +231,46 @@ async def test_real_engine_memory_lifecycle(tmp_path_factory: pytest.TempPathFac
             hit = hits[0]
             assert isinstance(hit, dict)
             assert hit["domain"] == target["domain"] and hit["permalink"] == target["permalink"]
+
+            graph = {"workspace_id": workspace_id, "domain": "integration"}
+            old_pump = (
+                "The greenhouse pump circulates nutrient solution.\n\n- [fact] Pump model P1 moves 40 litres per minute #hardware\n"
+                "- [fact] Serviced quarterly #hardware\n- part_of [[Lunar greenhouse]]\n"
+            )
+            new_pump = (
+                "The replacement greenhouse pump circulates nutrient solution.\n\n- [fact] Pump model P2 moves 60 litres per minute #hardware\n"
+                "- supersedes [[Greenhouse Pump]]\n- depends_on [[Missing Reservoir]]\n"
+            )
+            await client.call_tool("create_memory", {**graph, "title": "Greenhouse Pump", "content": old_pump, "tags": ["hardware"]})
+            await client.call_tool("create_memory", {**graph, "title": "Greenhouse Pump P2", "content": new_pump, "tags": ["hardware"]})
+            retired = {**graph, "permalink": "greenhouse-pump"}
+            retire = {"type": "set_frontmatter", "key": "status", "value": "superseded"}
+            assert payload(await client.call_tool("edit_memory", {**retired, "operation": retire}))["operation"] == "set_frontmatter"
+            assert payload(await client.call_tool("edit_memory", {**retired, "operation": retire}))["unchanged"] is True
+            await client.call_tool("edit_memory", {**retired, "operation": {"type": "append", "content": "- superseded_by [[Greenhouse Pump P2]]"}})
+            assert payload(await client.call_tool("read_memory", retired))["status"] == "superseded"
+
+            neighbourhood = Neighbourhood.model_validate(payload(await client.call_tool("build_memory_context", {**request_target, "depth": 2})))
+            assert {"lunar-greenhouse", "greenhouse-pump", "greenhouse-pump-p2"} <= {node.permalink for node in neighbourhood.nodes}
+            assert {"part_of", "supersedes"} <= {edge.rel_type for edge in neighbourhood.edges}
+
+            current = Hits.model_validate(
+                payload(
+                    await client.call_tool(
+                        "search_memories", {"workspace_id": workspace_id, "query": "greenhouse pump litres", "domains": ["integration"], "status": "stable"}
+                    )
+                )
+            )
+            current_permalinks = {hit.permalink for hit in current.hits}
+            assert "greenhouse-pump-p2" in current_permalinks and "greenhouse-pump" not in current_permalinks
+
+            review = Review.model_validate(
+                payload(await client.call_tool("review_memories", {"workspace_id": workspace_id, "domains": ["integration"], "families": ["structure"]}))
+            )
+            assert ("V102", "greenhouse-pump-p2") in {(finding.rule, finding.permalink) for finding in review.queue}
+
+            vocabulary = Vocabulary.model_validate(payload(await client.call_tool("get_memory_vocabulary", graph)))
+            assert {"part_of", "supersedes", "superseded_by"} <= {term.name for term in vocabulary.relation_types}
 
             await client.call_tool(
                 "create_memory",

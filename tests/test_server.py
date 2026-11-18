@@ -94,12 +94,22 @@ def test_http_secret_is_required_and_redacted(monkeypatch: pytest.MonkeyPatch) -
 
 @pytest.mark.asyncio
 async def test_mcp_inventory_and_health(engine: Path, capfd: pytest.CaptureFixture[str]) -> None:
-    """Verify the MCP identity, six-tool inventory, and readiness before any workspace activates."""
+    """Verify the MCP identity, nine-tool inventory, and readiness before any workspace activates."""
     async with Client(create_server(Settings())) as client:
         assert client.server_info is not None
         assert client.server_info.name == "marabrain-mcp"
         tools = await client.list_tools()
-        assert [tool.name for tool in tools] == ["health", "create_memory", "read_memory", "edit_memory", "delete_memory", "search_memories"]
+        assert [tool.name for tool in tools] == [
+            "health",
+            "create_memory",
+            "read_memory",
+            "edit_memory",
+            "delete_memory",
+            "search_memories",
+            "build_memory_context",
+            "review_memories",
+            "get_memory_vocabulary",
+        ]
         assert tools[0].annotations is not None
         assert tools[0].annotations.read_only_hint is True
         assert tools[0].annotations.idempotent_hint is True
@@ -109,6 +119,18 @@ async def test_mcp_inventory_and_health(engine: Path, capfd: pytest.CaptureFixtu
         assert result.structured_content == {"status": "ok", "version": "0.4.7"}
     assert probe_calls(engine) == []
     assert PROBE_NOISE not in "".join(capfd.readouterr())
+
+
+@pytest.mark.asyncio
+async def test_header_validation_schemas_match_the_advertised_tools(engine: Path) -> None:
+    """Serve Mcp-Param header validation the exact input schemas tools/list advertises, without a per-call listing."""
+    server = create_server(Settings())
+    async with Client(server) as client:
+        advertised = {tool.name: tool.input_schema for tool in await client.list_tools()}
+        lookup = server._mcp_server.get_tool_input_schema
+        assert lookup is not None
+        assert {name: lookup(name) for name in advertised} == advertised
+        assert lookup("unknown_tool") is None
 
 
 @pytest.mark.parametrize("mode", ["missing", "unexecutable", "fail", "hang"])

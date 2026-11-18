@@ -18,12 +18,16 @@ description: >-
    for an existing memory, call `search_memories` with `workspace_id`, a nonblank `query`, and a
    nonempty `domains` list. Ask if the destination or matching memory is ambiguous.
    Never invent a permalink from a title; use a receipt or search hit.
-3. Call `create_memory` once with `workspace_id` and the agreed values. It never overwrites an
+3. Before writing a body that records facts or links to other memories, call
+   `get_memory_vocabulary(workspace_id, domain)` to reuse the domain's existing relation
+   types, categories, and tags. Search for each memory you want to link and use its exact
+   title as the `[[Target Title]]`.
+4. Call `create_memory` once with `workspace_id` and the agreed values. It never overwrites an
    existing memory. A missing domain is initialized and registered automatically
    only if its new name matches `[a-z0-9][a-z0-9_.-]{0,63}` and contains no `..`.
    Existing exact registration names and paths are preserved; do not rename or
    lowercase an existing identity yourself. Server domain admission still applies.
-4. Report success only from a successful native receipt, preserving its returned
+5. Report success only from a successful native receipt, preserving its returned
    `permalink` and the domain for later use. If a mutation times out or the
    connection fails, its outcome may be uncertain. Read the known permalink or
    search the intended domain and inspect matches before considering another
@@ -36,6 +40,7 @@ description: >-
 | `create_memory` | `workspace_id`, `domain`, `title`, `content` | `tags` (null), `folder` (null), `metadata` (null) |
 | `search_memories` | `workspace_id`, `query`, `domains` | `tags` (null), `limit` (10), `page` (1) |
 | `read_memory` | `workspace_id`, `domain`, `permalink` | `compress` (false), `query` (null; required and nonblank when `compress=true`) |
+| `get_memory_vocabulary` | `workspace_id`, `domain` | None |
 
 Required parameters have no defaults and must be supplied. Optional parameters
 may be omitted to use their defaults; null is accepted only where listed as a
@@ -51,6 +56,14 @@ default. Use `compress=false` for reconciliation reads.
 - Required: `domain` is a string of 1-128 characters; `title` is 1-256;
   `content` is a string with no specified length limit. Missing or null content
   is invalid; `""` is allowed. Content may contain newlines but no NUL.
+- Body syntax: write a lead-in sentence, then bullets. `- [category] fact #tag` is an
+  observation. `- rel_type [[Target Title]]` is a relation; quote a multi-word type, as in
+  `- "relates to" [[Target]]`, because an unquoted `- see also [[X]]` is only a plain link.
+  A target resolves by title within the same domain; `[[other-domain:Title]]` crosses
+  domains. Unresolved targets are kept and flagged `resolved: false` by `read_memory`.
+  When the memory replaces an older one, add `- supersedes [[Old Title]]`.
+- `get_memory_vocabulary(workspace_id, domain)` returns native JSON with `categories`,
+  `relation_types`, `statuses`, `tags` (with counts), and `types` for one domain.
 - Optional: `tags` is a list of at most 32 strings, each 1-64 characters, with
   no commas, ASCII control characters, or surrounding whitespace. `folder` is
   a 1-512 character domain-relative path. `metadata` is a JSON object with valid
@@ -70,7 +83,7 @@ default. Use `compress=false` for reconciliation reads.
 ## Direct MCP invocation
 
 Use the connected `marabrain-mcp` server's exposed `create_memory`,
-`search_memories`, and `read_memory` tools. Host prefixes vary: select the actual
+`search_memories`, `read_memory`, and `get_memory_vocabulary` tools. Host prefixes vary: select the actual
 available tool name rather than inventing a prefixed name. Pass JSON parameters
 directly to the tool; the host handles authentication and transport. If the tools
 are unavailable, report the missing MCP connection instead of writing a client script.

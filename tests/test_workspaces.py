@@ -34,7 +34,7 @@ class CommandEvent(BaseModel):
 def workspace_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Path, Path]]:
     """Use a short private workspace root and a stateful native-command fake."""
     for name in tuple(os.environ):
-        if name.startswith(("MARABRAIN_", "EMBEDDING_", "CRYSTALLINE_")):
+        if name.startswith(("MARABRAIN_", "CRYSTALLINE_")):
             monkeypatch.delenv(name)
     executable = tmp_path / "crystalline"
     executable.write_text(SCRIPT)

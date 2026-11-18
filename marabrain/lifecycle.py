@@ -9,7 +9,7 @@ from typing import assert_never
 
 import anyio
 from anyio.abc import Process
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, Field
 
 from marabrain.config import EngineMode, Settings
 from marabrain.engine_context import EngineContext
@@ -36,7 +36,7 @@ def startup_remaining(deadline: float | None) -> float | None:
     return remaining
 
 
-async def run_startup_command(command: list[str], context: EngineContext, *, deadline: float | None = None, initialization: bool = False) -> StdoutCapture:
+async def run_startup_command(command: list[str], context: EngineContext, *, deadline: float | None = None) -> StdoutCapture:
     """Transfer captured output to its consumer only after owned child and stream cleanup."""
     await anyio.lowlevel.checkpoint()
     output = StdoutCapture(context.transients.max_capture_bytes, context.transients.capture_budget)
@@ -44,9 +44,7 @@ async def run_startup_command(command: list[str], context: EngineContext, *, dea
     try:
         with anyio.fail_after(startup_remaining(deadline)), context.transients.admit(control=True):
             with anyio.CancelScope(shield=True) as launch:
-                process = await anyio.open_process(
-                    command, stdin=subprocess.DEVNULL, stderr=sys.stderr if initialization else subprocess.DEVNULL, env=context.environment
-                )
+                process = await anyio.open_process(command, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=context.environment)
                 try:
                     launch.shield = False
                     await anyio.lowlevel.checkpoint()
@@ -162,22 +160,6 @@ async def managed_engine(settings: Settings, *, context: EngineContext | None = 
     startup_remaining(deadline)
     if await probe_engine(settings.health_timeout_seconds, context=bound_context, deadline=deadline):
         raise EngineLifecycleError("Managed mode refuses a responsive preexisting Crystalline daemon.")
-
-    # A subprocess makes blocking provider initialization cancellable without an
-    # abandoned thread that could later write configuration after shutdown.
-    initialized = await run_startup_command(
-        [
-            sys.executable,
-            "-c",
-            "import json; from marabrain.embeddings import initialize_embeddings; print(json.dumps(initialize_embeddings()))",
-        ],
-        bound_context,
-        deadline=deadline,
-        initialization=True,
-    )
-    with initialized as raw:
-        overlay = TypeAdapter(dict[str, str]).validate_json(raw, strict=True)
-    await anyio.lowlevel.checkpoint()
     startup_remaining(deadline)
     readiness_deadline = anyio.current_time() + settings.engine_startup_timeout_seconds
     if deadline is not None:
@@ -188,7 +170,7 @@ async def managed_engine(settings: Settings, *, context: EngineContext | None = 
             stdin=subprocess.DEVNULL,
             stdout=sys.stderr,
             stderr=sys.stderr,
-            env={**bound_context.environment, **overlay},
+            env=bound_context.environment,
         )
         try:
             launch.shield = False

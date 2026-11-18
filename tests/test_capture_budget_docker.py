@@ -26,7 +26,7 @@ def test_launcher_validates_and_forwards_aggregate_budget(
     launcher: Path, name: str, exported: str | None, dotenv: str | None, expected: str | None, valid: bool
 ) -> None:
     """Apply sourced precedence and identical aggregate or workspace-share policy while preserving managed residency forwarding."""
-    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "EMBEDDING_", "LLM_"))}
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("MARABRAIN_", "LLM_"))}
     environment.update(
         PATH=f"{launcher}{os.pathsep}{os.environ['PATH']}",
         DOCKER_LOG=str(launcher / "calls"),
